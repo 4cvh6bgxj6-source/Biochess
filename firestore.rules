@@ -58,6 +58,14 @@ service cloud.firestore {
       return q in ['book', 'brilliant', 'great', 'good', 'mistake', 'blunder', 'neutral'];
     }
 
+    function isValidCountryCode(c) {
+      return c is string && c.size() == 2 && c.matches('^[A-Z]{2}$');
+    }
+
+    function isValidBotId(b) {
+      return b in ['knight', 'bishop', 'king', 'master', 'alien', 'gothamchess', 'mittens', 'dummy'];
+    }
+
     // -------------------------------------------------------------------------
     // Validation Blueprints (Pillar 2: Strict Keys, Types, Boundaries, Identity)
     // -------------------------------------------------------------------------
@@ -68,7 +76,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'uid', 'username', 'key', 'elo', 'wins', 'losses', 'draws',
-          'online', 'activeGameId', 'createdAt', 'updatedAt'
+          'online', 'activeGameId', 'createdAt', 'updatedAt', 'lang', 'country'
         ]) &&
         isValidId(data.uid) &&
         isValidUsername(data.username) &&
@@ -81,6 +89,8 @@ service cloud.firestore {
         data.online is bool &&
         data.activeGameId is string && data.activeGameId.size() <= 128 &&
         (data.activeGameId == '' || isValidEntityId(data.activeGameId)) &&
+        (!('lang' in data) || (data.lang is string && data.lang.size() >= 2 && data.lang.size() <= 16)) &&
+        (!('country' in data) || isValidCountryCode(data.country)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -102,7 +112,7 @@ service cloud.firestore {
         data.keys().hasOnly([
           'id', 'fromUid', 'fromUsername', 'fromElo', 'toUid', 'toUsername',
           'timeControl', 'colorPref', 'status', 'gameId', 'expiresAtMs',
-          'createdAt', 'updatedAt'
+          'createdAt', 'updatedAt', 'fromCountry', 'toCountry'
         ]) &&
         isValidEntityId(data.id) &&
         isValidId(data.fromUid) &&
@@ -117,6 +127,8 @@ service cloud.firestore {
         data.gameId is string && data.gameId.size() <= 128 &&
         (data.gameId == '' || isValidEntityId(data.gameId)) &&
         data.expiresAtMs is int && data.expiresAtMs > 0 &&
+        (!('fromCountry' in data) || isValidCountryCode(data.fromCountry)) &&
+        (!('toCountry' in data) || isValidCountryCode(data.toCountry)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -148,7 +160,8 @@ service cloud.firestore {
           'whiteTimeMs', 'blackTimeMs', 'drawOfferBy',
           'rematchRequestedBy', 'rematchGameId',
           'whiteEloApplied', 'blackEloApplied',
-          'isBotGame', 'botId', 'lastMoveAt', 'createdAt', 'updatedAt'
+          'isBotGame', 'botId', 'whiteCountry', 'blackCountry',
+          'lastMoveAt', 'createdAt', 'updatedAt'
         ]) &&
         isValidEntityId(data.id) &&
         isValidId(data.whiteUid) &&
@@ -177,7 +190,9 @@ service cloud.firestore {
         data.whiteEloApplied is bool &&
         data.blackEloApplied is bool &&
         data.isBotGame is bool &&
-        data.botId in ['', 'knight', 'bishop', 'king'] &&
+        (data.botId == '' || isValidBotId(data.botId)) &&
+        (!('whiteCountry' in data) || isValidCountryCode(data.whiteCountry)) &&
+        (!('blackCountry' in data) || isValidCountryCode(data.blackCountry)) &&
         data.lastMoveAt is timestamp &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
@@ -298,6 +313,8 @@ service cloud.firestore {
         (
           // Action: Update online presence or active game pointer
           incoming().diff(existing()).affectedKeys().hasOnly(['online', 'activeGameId', 'updatedAt']) ||
+          // Action: Update language and country flag
+          incoming().diff(existing()).affectedKeys().hasOnly(['lang', 'country', 'updatedAt']) ||
           // Action: Settle completed match ELO (+50 win / -76 loss / 0 draw)
           (
             incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'wins', 'losses', 'draws', 'activeGameId', 'updatedAt']) &&
@@ -437,7 +454,7 @@ service cloud.firestore {
           ) ||
           (
             incoming().isBotGame &&
-            incoming().botId in ['knight', 'bishop', 'king'] &&
+            isValidBotId(incoming().botId) &&
             incoming().participantUids.size() == 1 &&
             (
               (incoming().whiteIsBot && incoming().whiteUid == 'bot' && !incoming().blackIsBot && incoming().blackUid == request.auth.uid) ||

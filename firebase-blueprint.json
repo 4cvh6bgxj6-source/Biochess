@@ -49,6 +49,17 @@
         "updatedAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "lang": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 16
+        },
+        "country": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "pattern": "^[A-Z]{2}$"
         }
       },
       "required": [
@@ -151,6 +162,18 @@
         "updatedAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "fromCountry": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "pattern": "^[A-Z]{2}$"
+        },
+        "toCountry": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "pattern": "^[A-Z]{2}$"
         }
       },
       "required": [
@@ -276,7 +299,19 @@
         },
         "botId": {
           "type": "string",
-          "enum": ["", "knight", "bishop", "king"]
+          "enum": ["", "knight", "bishop", "king", "master", "alien", "gothamchess", "mittens", "dummy"]
+        },
+        "whiteCountry": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "pattern": "^[A-Z]{2}$"
+        },
+        "blackCountry": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "pattern": "^[A-Z]{2}$"
         },
         "lastMoveAt": {
           "type": "string",

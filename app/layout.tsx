@@ -17,18 +17,18 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: 'BioChess · Scacchi Online',
   description:
-    'Gioca a scacchi online su BioChess: sfida avversari con il solo username, gioca contro i bot e analizza Blunder, Mistake, Great e Brilliant.',
+    'Gioca a scacchi online su BioChess con tutte le lingue e bandiere del mondo: sfida amici in tempo reale, allenati con i Coach e il Dummy e guarda la revisione a fine partita.',
   openGraph: {
     title: 'BioChess · Scacchi Online',
     description:
-      'Gioca a scacchi online su BioChess: sfida avversari con il solo username, gioca contro i bot e analizza Blunder, Mistake, Great e Brilliant.',
+      'Gioca a scacchi online su BioChess con tutte le lingue e bandiere del mondo: sfida amici in tempo reale, allenati con i Coach e il Dummy e guarda la revisione a fine partita.',
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
     title: 'BioChess · Scacchi Online',
     description:
-      'Gioca a scacchi online su BioChess: sfida avversari con il solo username, gioca contro i bot e analizza Blunder, Mistake, Great e Brilliant.',
+      'Gioca a scacchi online su BioChess con tutte le lingue e bandiere del mondo: sfida amici in tempo reale, allenati con i Coach e il Dummy e guarda la revisione a fine partita.',
   },
 };
 

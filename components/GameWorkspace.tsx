@@ -11,14 +11,24 @@ import {
   ChevronRight,
   Eraser,
   Flag,
+  GraduationCap,
   Handshake,
   RotateCcw,
   RefreshCw,
+  Target,
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import type { GameMove, GameState, MoveQuality, PieceColor } from '@/lib/types';
-import { TIME_CONTROLS } from '@/lib/types';
+import {
+  isTrainingBot,
+  TIME_CONTROLS,
+  type GameMove,
+  type GameState,
+  type MoveQuality,
+  type PieceColor,
+} from '@/lib/types';
+import { computePostGameReview } from '@/lib/chess-bot';
+import type { UiDictionary } from '@/lib/i18n';
 import { ChessBoard, type BoardArrow, type BoardHighlight } from './ChessBoard';
 import { PlayerBar } from './PlayerBar';
 import { MatchChat } from './MatchChat';
@@ -27,6 +37,7 @@ import { MoveQualityBadge, QUALITY_META } from './MoveQualityBadge';
 interface GameWorkspaceProps {
   game: GameState;
   myUsername: string;
+  dict: UiDictionary;
   whiteTimeMs: number;
   blackTimeMs: number;
   muted: boolean;
@@ -78,6 +89,7 @@ function computeCaptured(moves: GameState['moves']) {
 export function GameWorkspace({
   game,
   myUsername,
+  dict,
   whiteTimeMs,
   blackTimeMs,
   muted,
@@ -103,6 +115,11 @@ export function GameWorkspace({
   const [highlights, setHighlights] = useState<BoardHighlight[]>([]);
 
   const orientation: PieceColor = flipped ? (myColor === 'w' ? 'b' : 'w') : myColor;
+  const isActive = game.status === 'active';
+  const isTrainingMatch = Boolean(game.isBotGame && isTrainingBot(game.botId));
+
+  // Revision ONLY appears at the end of a game AND ONLY against Coaches or Dummy
+  const showReview = !isActive && isTrainingMatch;
 
   const isInspectingHistory =
     viewMoveIndex !== null && viewMoveIndex < game.moves.length - 1;
@@ -124,9 +141,9 @@ export function GameWorkspace({
     return {
       from: inspectedMove.from,
       to: inspectedMove.to,
-      quality: inspectedMove.quality,
+      quality: showReview ? inspectedMove.quality : undefined,
     };
-  }, [inspectedMove]);
+  }, [inspectedMove, showReview]);
 
   const material = useMemo(() => computeCaptured(game.moves), [game.moves]);
 
@@ -139,6 +156,7 @@ export function GameWorkspace({
       mistake: 0,
       blunder: 0,
     };
+    if (!showReview) return counts;
     for (const m of game.moves) {
       if (m.color !== myColor) continue;
       if (m.quality && m.quality !== 'neutral') {
@@ -146,7 +164,31 @@ export function GameWorkspace({
       }
     }
     return counts;
-  }, [game.moves, myColor]);
+  }, [game.moves, myColor, showReview]);
+
+  const reviewData = useMemo(() => {
+    if (!showReview) return null;
+    return computePostGameReview(game.moves, myColor);
+  }, [showReview, game.moves, myColor]);
+
+  const errorMoveIndices = useMemo(() => {
+    if (!showReview) return [] as number[];
+    const idxs: number[] = [];
+    for (let i = 0; i < game.moves.length; i++) {
+      const m = game.moves[i];
+      if (m.color === myColor && (m.quality === 'mistake' || m.quality === 'blunder')) {
+        idxs.push(i);
+      }
+    }
+    return idxs;
+  }, [game.moves, myColor, showReview]);
+
+  function handleJumpToNextError() {
+    if (errorMoveIndices.length === 0) return;
+    const nextIdx = errorMoveIndices.find((idx) => idx > activeMoveIndex);
+    const target = nextIdx !== undefined ? nextIdx : errorMoveIndices[0];
+    setViewMoveIndex(target === game.moves.length - 1 ? null : target);
+  }
 
   const topColor: PieceColor = orientation === 'w' ? 'b' : 'w';
   const bottomColor: PieceColor = orientation;
@@ -155,8 +197,9 @@ export function GameWorkspace({
   const bottomPlayer = bottomColor === 'w' ? game.white : game.black;
 
   const opponent = myColor === 'w' ? game.black : game.white;
-  const isActive = game.status === 'active';
-  const canMoveNow = isActive && !isInspectingHistory && game.turn === myColor;
+  const isDummyTraining = Boolean(game.isBotGame && game.botId === 'dummy');
+  const canMoveNow =
+    isActive && !isInspectingHistory && (isDummyTraining || game.turn === myColor);
   const incomingDrawOffer = isActive && game.drawOfferBy !== null && game.drawOfferBy !== myColor;
 
   const movePairs = useMemo(() => {
@@ -177,15 +220,33 @@ export function GameWorkspace({
 
   const winnerLabel = useMemo(() => {
     if (game.status === 'active') return '';
-    if (game.winner === 'draw') return 'Patta';
-    if (game.winner === myColor) return 'Hai vinto!';
-    return 'Sconfitta';
-  }, [game.status, game.winner, myColor]);
+    if (isDummyTraining && game.status === 'resigned') return dict.trainingComplete;
+    if (game.winner === 'draw') return dict.drawResult;
+    if (game.winner === myColor) return dict.youWon;
+    return dict.defeat;
+  }, [game.status, game.winner, myColor, dict, isDummyTraining]);
+
+  function handleStartReview() {
+    if (game.moves.length === 0) return;
+    if (errorMoveIndices.length > 0) {
+      const firstErr = errorMoveIndices[0];
+      setViewMoveIndex(firstErr === game.moves.length - 1 ? null : firstErr);
+      return;
+    }
+    const firstMyMove = game.moves.findIndex((m) => m.color === myColor);
+    const target = firstMyMove >= 0 ? firstMyMove : 0;
+    setViewMoveIndex(target === game.moves.length - 1 ? null : target);
+  }
 
   const inspectedMeta =
-    inspectedMove?.quality && inspectedMove.quality !== 'neutral'
+    showReview && inspectedMove?.quality && inspectedMove.quality !== 'neutral'
       ? QUALITY_META[inspectedMove.quality]
       : null;
+
+  const bestMoveHint =
+    showReview && reviewData && activeMoveIndex >= 0
+      ? reviewData.bestMoveByPly[activeMoveIndex]
+      : undefined;
 
   return (
     <div className="max-w-[1160px] mx-auto px-4 sm:px-6 py-4 sm:py-6">
@@ -203,6 +264,7 @@ export function GameWorkspace({
               isSelf={topColor === myColor}
               capturedPieces={topColor === 'w' ? material.capturedByWhite : material.capturedByBlack}
               materialAdvantage={topColor === 'w' ? material.whiteAdv : material.blackAdv}
+              dict={dict}
             />
 
             <ChessBoard
@@ -211,7 +273,7 @@ export function GameWorkspace({
               activeMoveCount={activeMoveIndex + 1}
               orientation={orientation}
               canInteract={canMoveNow}
-              playerColor={myColor}
+              playerColor={isDummyTraining ? null : myColor}
               lastMove={lastMoveHighlight}
               arrowMode={arrowMode}
               arrows={arrows}
@@ -236,11 +298,12 @@ export function GameWorkspace({
                 bottomColor === 'w' ? material.capturedByWhite : material.capturedByBlack
               }
               materialAdvantage={bottomColor === 'w' ? material.whiteAdv : material.blackAdv}
+              dict={dict}
             />
           </div>
         </div>
 
-        {/* Right: Unified Chess.com Game Panel (Eval, Moves, Controls, Chat) */}
+        {/* Right: Unified Chess.com Game Panel */}
         <div className="lg:col-span-5 bg-[#262421] border border-[#3C3A36] rounded-md overflow-hidden flex flex-col">
           {/* Top Bar inside panel */}
           <div className="flex items-center justify-between px-3.5 py-2.5 bg-[#21201D] border-b border-[#3C3A36]">
@@ -250,30 +313,76 @@ export function GameWorkspace({
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#BABABA] hover:text-white transition-colors"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Lobby</span>
+              <span>{dict.lobby}</span>
             </button>
             <span className="text-xs font-semibold text-[#9E9D9A]">
-              {TIME_CONTROLS[game.timeControl].label} · {game.moves.length} mosse
+              {TIME_CONTROLS[game.timeControl].label} · {game.moves.length} {dict.movesWord}
             </span>
           </div>
 
           {/* Game Over Summary */}
           {!isActive && (
             <div className="p-4 bg-[#2E2B27] border-b border-[#3C3A36]">
-              <h2 className="text-lg font-extrabold text-white">{winnerLabel}</h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-lg font-extrabold text-white">{winnerLabel}</h2>
+                {showReview && reviewData && (
+                  <span className="px-2.5 py-1 rounded bg-[#21201D] border border-[#81B64C]/50 text-xs font-bold text-[#81B64C] font-mono-tabular shrink-0">
+                    {dict.accuracyLabel}: {reviewData.accuracyPct}%
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-[#C3C2C0] mt-0.5">{game.endReason}</p>
 
-              <div className="mt-2.5 flex flex-wrap items-center gap-3 text-xs font-mono-tabular">
-                <span className="text-[#D2B088] inline-flex items-center gap-1">
-                  <BookOpen className="w-3 h-3" />
-                  {myQualityCounts.book}
-                </span>
-                <span className="text-[#26D0C9]">!! {myQualityCounts.brilliant}</span>
-                <span className="text-[#7AB3E0]">! {myQualityCounts.great}</span>
-                <span className="text-[#9ED16A]">Buone {myQualityCounts.good}</span>
-                <span className="text-[#F5A84B]">? {myQualityCounts.mistake}</span>
-                <span className="text-[#F16562]">?? {myQualityCounts.blunder}</span>
-              </div>
+              {/* Post-Game Review Summary: ONLY for Coaches & Dummy */}
+              {showReview ? (
+                <div className="mt-3 p-3 rounded bg-[#21201D] border border-[#81B64C]/55 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-white inline-flex items-center gap-1.5">
+                      <GraduationCap className="w-4 h-4 text-[#81B64C]" />
+                      <span>{dict.reviewTitle}</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {game.moves.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleStartReview}
+                          className="px-2.5 py-1 rounded bg-[#81B64C] hover:bg-[#95C85E] text-[11px] font-extrabold text-white inline-flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <GraduationCap className="w-3 h-3" />
+                          <span>{dict.startReviewBtn}</span>
+                        </button>
+                      )}
+                      {errorMoveIndices.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleJumpToNextError}
+                          className="px-2.5 py-1 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-[11px] font-bold text-[#F5A84B] inline-flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <Target className="w-3 h-3" />
+                          <span>{dict.nextErrorBtn}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 text-xs font-mono-tabular">
+                    <span className="text-[#D2B088] inline-flex items-center gap-1">
+                      <BookOpen className="w-3 h-3" />
+                      {myQualityCounts.book}
+                    </span>
+                    <span className="text-[#26D0C9]">!! {myQualityCounts.brilliant}</span>
+                    <span className="text-[#7AB3E0]">! {myQualityCounts.great}</span>
+                    <span className="text-[#9ED16A]">Buone {myQualityCounts.good}</span>
+                    <span className="text-[#F5A84B]">? {myQualityCounts.mistake}</span>
+                    <span className="text-[#F16562]">?? {myQualityCounts.blunder}</span>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-2.5 text-[11px] text-[#9E9D9A] flex items-center gap-1.5">
+                  <GraduationCap className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />
+                  <span>{dict.reviewOnlyCoachDesc}</span>
+                </p>
+              )}
 
               <div className="flex flex-wrap items-center gap-2 mt-3.5">
                 <button
@@ -285,10 +394,10 @@ export function GameWorkspace({
                   <RefreshCw className="w-3.5 h-3.5" />
                   <span>
                     {game.rematchRequestedBy === myColor
-                      ? 'Attesa rivincita...'
+                      ? dict.waitingRematch
                       : game.rematchRequestedBy
-                        ? 'Accetta rivincita'
-                        : 'Rivincita'}
+                        ? dict.acceptRematch
+                        : dict.rematch}
                   </span>
                 </button>
                 <button
@@ -296,7 +405,7 @@ export function GameWorkspace({
                   onClick={onBackToLobby}
                   className="px-3.5 py-2 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-[#E5E4E2] text-xs font-bold whitespace-nowrap"
                 >
-                  Nuova partita
+                  {dict.newGame}
                 </button>
               </div>
             </div>
@@ -306,7 +415,7 @@ export function GameWorkspace({
           {incomingDrawOffer && (
             <div className="px-3.5 py-2.5 bg-[#2E2B27] border-b border-[#3C3A36] flex items-center justify-between gap-2">
               <span className="text-xs text-white font-semibold">
-                {opponent.username} propone patta
+                {opponent.username} {dict.drawOfferText}
               </span>
               <div className="flex items-center gap-1.5">
                 <button
@@ -314,21 +423,21 @@ export function GameWorkspace({
                   onClick={() => onRespondDraw(true)}
                   className="px-2.5 py-1 rounded bg-[#81B64C] text-white text-xs font-bold"
                 >
-                  Accetta
+                  {dict.accept}
                 </button>
                 <button
                   type="button"
                   onClick={() => onRespondDraw(false)}
                   className="px-2.5 py-1 rounded bg-[#3C3A36] text-[#DAD9D7] text-xs font-semibold"
                 >
-                  No
+                  {dict.no}
                 </button>
               </div>
             </div>
           )}
 
-          {/* Real Engine Move Evaluation Bar */}
-          {inspectedMove && (
+          {/* Post-Game Move Evaluation Bar: ONLY rendered after finished Coach/Dummy matches */}
+          {showReview && inspectedMove && (
             <div className="px-3.5 py-2 bg-[#21201D] border-b border-[#3C3A36] flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 {inspectedMove.quality && inspectedMove.quality !== 'neutral' && (
@@ -344,7 +453,16 @@ export function GameWorkspace({
                     )}
                   </p>
                   <p className="text-[11px] text-[#9E9D9A] truncate">
-                    {inspectedMeta ? inspectedMeta.subtitle : 'Leggermente inferiore alla migliore'}
+                    {bestMoveHint ? (
+                      <span className="text-[#81B64C] font-semibold">
+                        {dict.reviewHintPrefix}{' '}
+                        <span className="font-mono-tabular">{bestMoveHint}</span>
+                      </span>
+                    ) : inspectedMeta ? (
+                      inspectedMeta.subtitle
+                    ) : (
+                      'Leggermente inferiore alla migliore'
+                    )}
                   </p>
                 </div>
               </div>
@@ -362,7 +480,7 @@ export function GameWorkspace({
           <div className="h-[170px] overflow-y-auto font-mono-tabular text-xs">
             {movePairs.length === 0 ? (
               <p className="text-[#8B8987] text-center py-10 font-sans">
-                Fai la prima mossa sulla scacchiera
+                {dict.makeFirstMove}
               </p>
             ) : (
               <div>
@@ -390,7 +508,9 @@ export function GameWorkspace({
                         }`}
                       >
                         <span className="truncate">{pair.white.move.san}</span>
-                        <MoveQualityBadge quality={pair.white.move.quality} size="sm" />
+                        {showReview && (
+                          <MoveQualityBadge quality={pair.white.move.quality} size="sm" />
+                        )}
                       </button>
                     )}
                     {pair.black && (
@@ -409,7 +529,9 @@ export function GameWorkspace({
                         }`}
                       >
                         <span className="truncate">{pair.black.move.san}</span>
-                        <MoveQualityBadge quality={pair.black.move.quality} size="sm" />
+                        {showReview && (
+                          <MoveQualityBadge quality={pair.black.move.quality} size="sm" />
+                        )}
                       </button>
                     )}
                   </div>
@@ -420,7 +542,7 @@ export function GameWorkspace({
 
           {isInspectingHistory && (
             <div className="px-3 py-1.5 bg-[#383530] border-t border-[#45433E] flex items-center justify-between text-xs text-[#F5F682]">
-              <span>Mossa precedente</span>
+              <span>...</span>
               <button
                 type="button"
                 onClick={() => setViewMoveIndex(null)}
@@ -508,7 +630,7 @@ export function GameWorkspace({
                 }`}
               >
                 <ArrowUpRight className="w-3.5 h-3.5" />
-                <span>Frecce</span>
+                <span>{dict.arrowsBtn}</span>
               </button>
               {(arrows.length > 0 || highlights.length > 0) && (
                 <button
@@ -528,45 +650,58 @@ export function GameWorkspace({
 
             {isActive && (
               <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={onOfferDraw}
-                  disabled={game.drawOfferBy === myColor}
-                  className="px-2.5 py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] disabled:opacity-40 text-xs text-[#DAD9D7] font-semibold inline-flex items-center gap-1"
-                >
-                  <Handshake className="w-3.5 h-3.5" />
-                  <span>Patta</span>
-                </button>
-
-                {!confirmResign ? (
+                {isDummyTraining ? (
                   <button
                     type="button"
-                    onClick={() => setConfirmResign(true)}
-                    className="px-2.5 py-1.5 rounded bg-[#302E2B] hover:bg-[#CA3431] text-xs text-[#DAD9D7] hover:text-white font-semibold inline-flex items-center gap-1 transition-colors"
+                    onClick={onResign}
+                    className="px-3 py-1.5 rounded bg-[#81B64C] hover:bg-[#95C85E] text-xs text-white font-bold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
                   >
-                    <Flag className="w-3.5 h-3.5" />
-                    <span>Abbandona</span>
+                    <GraduationCap className="w-3.5 h-3.5" />
+                    <span>{dict.finishAndReviewBtn}</span>
                   </button>
                 ) : (
-                  <div className="flex items-center gap-1">
+                  <>
                     <button
                       type="button"
-                      onClick={() => {
-                        setConfirmResign(false);
-                        onResign();
-                      }}
-                      className="px-2.5 py-1.5 rounded bg-[#CA3431] text-xs text-white font-bold"
+                      onClick={onOfferDraw}
+                      disabled={game.drawOfferBy === myColor}
+                      className="px-2.5 py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] disabled:opacity-40 text-xs text-[#DAD9D7] font-semibold inline-flex items-center gap-1"
                     >
-                      Conferma
+                      <Handshake className="w-3.5 h-3.5" />
+                      <span>{dict.drawBtn}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmResign(false)}
-                      className="px-2 py-1.5 rounded bg-[#3C3A36] text-xs text-[#DAD9D7]"
-                    >
-                      No
-                    </button>
-                  </div>
+
+                    {!confirmResign ? (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmResign(true)}
+                        className="px-2.5 py-1.5 rounded bg-[#302E2B] hover:bg-[#CA3431] text-xs text-[#DAD9D7] hover:text-white font-semibold inline-flex items-center gap-1 transition-colors"
+                      >
+                        <Flag className="w-3.5 h-3.5" />
+                        <span>{dict.resign}</span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfirmResign(false);
+                            onResign();
+                          }}
+                          className="px-2.5 py-1.5 rounded bg-[#CA3431] text-xs text-white font-bold"
+                        >
+                          {dict.confirm}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmResign(false)}
+                          className="px-2 py-1.5 rounded bg-[#3C3A36] text-xs text-[#DAD9D7]"
+                        >
+                          {dict.no}
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

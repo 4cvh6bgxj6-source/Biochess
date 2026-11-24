@@ -3,6 +3,8 @@
 import React from 'react';
 import { Bot, Clock, User } from 'lucide-react';
 import { BOT_DEFINITIONS, type GamePlayerInfo, type PieceColor, type TimeControlId } from '@/lib/types';
+import { countryCodeToFlag } from '@/lib/world-languages';
+import type { UiDictionary } from '@/lib/i18n';
 import { ChessPiece } from './ChessPiece';
 
 interface PlayerBarProps {
@@ -15,6 +17,7 @@ interface PlayerBarProps {
   isSelf: boolean;
   capturedPieces: Array<'p' | 'n' | 'b' | 'r' | 'q'>;
   materialAdvantage: number;
+  dict?: UiDictionary;
 }
 
 function formatClock(ms: number): string {
@@ -39,11 +42,19 @@ export function PlayerBar({
   isSelf,
   capturedPieces,
   materialAdvantage,
+  dict,
 }: PlayerBarProps) {
   const isLowTime = timeControl !== 'unlimited' && timeMs > 0 && timeMs <= 20000;
   const botDef = player.isBot && player.botId ? BOT_DEFINITIONS[player.botId] : null;
   const capturedColor: PieceColor = color === 'w' ? 'b' : 'w';
   const activeTurn = isGameActive && isTurn;
+
+  const flagBadge = botDef
+    ? botDef.badgeEmoji
+    : countryCodeToFlag(player.country) || '';
+
+  const colorLabel =
+    color === 'w' ? (dict?.colorWhite ?? 'Bianco') : (dict?.colorBlack ?? 'Nero');
 
   return (
     <div className="flex items-center justify-between gap-3 py-1.5">
@@ -60,16 +71,23 @@ export function PlayerBar({
 
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 text-sm leading-tight">
+            {flagBadge && (
+              <span className="text-base leading-none shrink-0" aria-hidden="true">
+                {flagBadge}
+              </span>
+            )}
             <span className="font-bold text-white truncate">{player.username}</span>
             <span className="text-[#9E9D9A] font-mono-tabular text-xs shrink-0">
               ({player.elo})
             </span>
             {isSelf && (
-              <span className="text-[11px] text-[#9E9D9A] shrink-0">· Tu</span>
+              <span className="text-[11px] text-[#9E9D9A] shrink-0">
+                · {dict?.youTag ?? 'Tu'}
+              </span>
             )}
             {activeTurn && (
               <span className="text-[11px] font-semibold text-[#81B64C] shrink-0">
-                · {isSelf ? 'Tocca a te' : 'Turno'}
+                · {isSelf ? (dict?.yourTurn ?? 'Tocca a te') : (dict?.turnTag ?? 'Turno')}
               </span>
             )}
           </div>
@@ -89,9 +107,7 @@ export function PlayerBar({
                 )}
               </div>
             ) : (
-              <span className="text-[11px] text-[#8B8987]">
-                {color === 'w' ? 'Bianco' : 'Nero'}
-              </span>
+              <span className="text-[11px] text-[#8B8987]">{colorLabel}</span>
             )}
           </div>
         </div>

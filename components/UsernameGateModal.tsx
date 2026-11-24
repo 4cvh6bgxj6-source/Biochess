@@ -4,11 +4,18 @@ import React, { useState } from 'react';
 import Image from 'next/image';
 import { LogIn, UserCheck } from 'lucide-react';
 import { BIOCHESS_LOGO } from '@/lib/brand';
+import type { UiDictionary } from '@/lib/i18n';
+import type { WorldLocaleOption } from '@/lib/world-languages';
+import { LanguagePicker } from './LanguagePicker';
 
 interface UsernameGateModalProps {
   step: 'google' | 'choose_username';
+  lang: string;
+  country: string;
+  dict: UiDictionary;
   error: string | null;
   connecting: boolean;
+  onLocaleChange: (option: WorldLocaleOption) => void;
   onGoogleSignIn: () => void;
   onCreateProfile: (username: string) => void;
   onSwitchGoogleAccount: () => void;
@@ -17,8 +24,12 @@ interface UsernameGateModalProps {
 
 export function UsernameGateModal({
   step,
+  lang,
+  country,
+  dict,
   error,
   connecting,
+  onLocaleChange,
   onGoogleSignIn,
   onCreateProfile,
   onSwitchGoogleAccount,
@@ -37,13 +48,13 @@ export function UsernameGateModal({
     <div className="min-h-[calc(100vh-56px)] flex items-center justify-center px-4 py-8 bg-[#302E2B]">
       <div className="w-full max-w-md bg-[#262421] border border-[#3C3A36] rounded-lg p-7 sm:p-8 shadow-2xl flex flex-col items-center">
         {/* Large Official BioChess Logo */}
-        <div className="relative w-48 h-48 sm:w-56 sm:h-56 rounded-xl overflow-hidden border border-[#3C3A36] bg-[#0F1419] shadow-lg mb-5">
+        <div className="relative w-44 h-44 sm:w-52 sm:h-52 rounded-xl overflow-hidden border border-[#3C3A36] bg-[#0F1419] shadow-lg mb-5">
           <Image
             src={BIOCHESS_LOGO}
             alt="Logo ufficiale BioChess"
             fill
             priority
-            sizes="(max-width: 640px) 192px, 224px"
+            sizes="(max-width: 640px) 176px, 208px"
             className="object-cover"
             referrerPolicy="no-referrer"
           />
@@ -53,10 +64,21 @@ export function UsernameGateModal({
           BioChess
         </h1>
 
+        <div className="w-full mt-4">
+          <LanguagePicker
+            lang={lang}
+            country={country}
+            onChange={onLocaleChange}
+            label={dict.chooseLanguage}
+            searchPlaceholder={dict.searchLanguage}
+            variant="full"
+          />
+        </div>
+
         {step === 'google' ? (
           <>
-            <p className="text-sm text-[#BABABA] text-center mt-2 leading-relaxed">
-              Accedi con Google per sfidare amici online in tempo reale, salvare il tuo punteggio ELO e giocare contro i bot.
+            <p className="text-sm text-[#BABABA] text-center mt-4 leading-relaxed">
+              {dict.tagline}
             </p>
 
             {error && (
@@ -69,25 +91,25 @@ export function UsernameGateModal({
               type="button"
               disabled={connecting}
               onClick={onGoogleSignIn}
-              className="w-full mt-6 py-3 px-4 rounded-md bg-[#81B64C] hover:bg-[#95C85E] active:translate-y-0.5 disabled:opacity-45 disabled:pointer-events-none text-white text-base font-bold border-b-4 border-[#5D8A32] transition-colors inline-flex items-center justify-center gap-2.5"
+              className="w-full mt-5 py-3 px-4 rounded-md bg-[#81B64C] hover:bg-[#95C85E] active:translate-y-0.5 disabled:opacity-45 disabled:pointer-events-none text-white text-base font-bold border-b-4 border-[#5D8A32] transition-colors inline-flex items-center justify-center gap-2.5"
             >
               <LogIn className="w-5 h-5" />
-              <span>{connecting ? 'Connessione...' : 'Accedi con Google'}</span>
+              <span>{connecting ? dict.connecting : dict.signInWithGoogle}</span>
             </button>
           </>
         ) : (
           <>
-            <p className="text-sm text-[#BABABA] text-center mt-2">
-              Scegli il tuo username pubblico BioChess per iniziare da 300 ELO.
+            <p className="text-sm text-[#BABABA] text-center mt-4">
+              {dict.chooseUsernameDesc}
             </p>
 
-            <form onSubmit={handleSubmitUsername} className="w-full mt-5 space-y-4">
+            <form onSubmit={handleSubmitUsername} className="w-full mt-4 space-y-4">
               <div>
                 <label
                   htmlFor="auth-username"
                   className="block text-xs font-semibold text-[#C3C2C0] mb-1.5"
                 >
-                  Username (2-20 caratteri, lettere, numeri o _)
+                  {dict.usernameLabel}
                 </label>
                 <input
                   id="auth-username"
@@ -117,7 +139,7 @@ export function UsernameGateModal({
                 className="w-full py-3 px-4 rounded-md bg-[#81B64C] hover:bg-[#95C85E] active:translate-y-0.5 disabled:opacity-45 disabled:pointer-events-none text-white text-base font-bold border-b-4 border-[#5D8A32] transition-colors inline-flex items-center justify-center gap-2"
               >
                 <UserCheck className="w-5 h-5" />
-                <span>{connecting ? 'Creazione profilo...' : 'Inizia a giocare'}</span>
+                <span>{connecting ? dict.connecting : dict.startPlaying}</span>
               </button>
 
               <button
@@ -125,7 +147,7 @@ export function UsernameGateModal({
                 onClick={onSwitchGoogleAccount}
                 className="w-full py-2 text-xs text-[#9E9D9A] hover:text-white transition-colors"
               >
-                Usa un altro account Google
+                {dict.switchGoogleAccount}
               </button>
             </form>
           </>

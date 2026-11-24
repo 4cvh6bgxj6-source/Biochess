@@ -3,7 +3,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { AnimatePresence, motion } from 'motion/react';
-import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
+import {
+  getRedirectResult,
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import { Bot, LogOut, Swords, Trophy } from 'lucide-react';
 import type {
   BotId,
@@ -18,6 +25,8 @@ import type {
   TimeControlId,
 } from '@/lib/types';
 import { BIOCHESS_LOGO } from '@/lib/brand';
+import { getUiDict } from '@/lib/i18n';
+import { countryCodeToFlag, type WorldLocaleOption } from '@/lib/world-languages';
 import { soundFX } from '@/lib/sound';
 import { auth, googleProvider } from '@/lib/firebase';
 import {
@@ -44,12 +53,14 @@ import {
   subscribeOnlinePlayers,
   subscribeRecentMatches,
   submitMoveToFirestore,
+  updateUserLocale,
   type GameDocSnapshot,
 } from '@/lib/firestore-chess';
 import { UsernameGateModal } from './UsernameGateModal';
 import { LobbyView, type LobbyTab } from './LobbyView';
 import { GameWorkspace } from './GameWorkspace';
 import { IncomingChallengeToast } from './IncomingChallengeToast';
+import { LanguagePicker } from './LanguagePicker';
 
 export function ChessApp() {
   const [authReady, setAuthReady] = useState(false);
@@ -71,17 +82,33 @@ export function ChessApp() {
 
   const [activeGameId, setActiveGameId] = useState<string | null>(null);
   const [activeGameDoc, setActiveGameDoc] = useState<GameDocSnapshot | null>(null);
-  const [activeMoves, setActiveMoves] = useState<GameMove[]>([]);
-  const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
+  const [activeMovesState, setActiveMovesState] = useState<{
+    gameId: string;
+    moves: GameMove[];
+  }>({ gameId: '', moves: [] });
+  const [activeMessagesState, setActiveMessagesState] = useState<{
+    gameId: string;
+    messages: ChatMessage[];
+  }>({ gameId: '', messages: [] });
 
   const [viewMode, setViewMode] = useState<'lobby' | 'game'>('lobby');
   const [lobbyTab, setLobbyTab] = useState<LobbyTab>('challenge');
   const [liveClock, setLiveClock] = useState<{ gameId: string; w: number; b: number } | null>(null);
   const [muted, setMuted] = useState(false);
   const [inviteTarget, setInviteTarget] = useState('');
+  const [selectedLocale, setSelectedLocale] = useState<{ lang: string; country: string }>({
+    lang: 'it',
+    country: 'IT',
+  });
 
   const settlingGameIdsRef = useRef<Set<string>>(new Set());
   const botTurnKeyRef = useRef<string>('');
+  const latestGameRef = useRef<GameState | null>(null);
+  const liveTimesRef = useRef<{ w: number; b: number }>({ w: 0, b: 0 });
+  const activeGameIdRef = useRef<string | null>(null);
+  const profileActiveGameIdRef = useRef<string>('');
+  const hasRestoredInitialGameRef = useRef(false);
+  const knownActivePvpIdsRef = useRef<Set<string>>(new Set());
   const humanMoveMetaRef = useRef<{
     gameId: string;
     ply: number;
@@ -106,6 +133,9 @@ export function ChessApp() {
   const profileLoaded = Boolean(authUser && loadedProfileUid === authUser.uid);
   const hasProfile = Boolean(profile);
   const profileUsername = profile?.username || '';
+  const activeLang = profile?.lang || selectedLocale.lang;
+  const activeCountry = profile?.country || selectedLocale.country;
+  const dict = useMemo(() => getUiDict(activeLang), [activeLang]);
 
   // Parse invite link ?sfida=username
   useEffect(() => {
@@ -116,8 +146,22 @@ export function ChessApp() {
     }
   }, []);
 
-  // Firebase Auth listener
+  // Firebase Auth listener + handle redirect fallback result
   useEffect(() => {
+    void getRedirectResult(auth).catch((err: unknown) => {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
+      if (code === 'auth/unauthorized-domain') {
+        setAuthError(
+          `Dominio "${window.location.hostname}" non autorizzato in Firebase. Aggiungilo in Firebase Console → Authentication → Settings → Authorized domains.`
+        );
+      } else if (code && code !== 'auth/popup-closed-by-user') {
+        setAuthError(`Accesso con Google non riuscito (${code}). Riprova.`);
+      }
+    });
+
     const unsub = onAuthStateChanged(auth, (user) => {
       setAuthUser(user);
       setAuthReady(true);
@@ -126,14 +170,16 @@ export function ChessApp() {
         setLoadedProfileUid(null);
         setActiveGameId(null);
         setActiveGameDoc(null);
-        setActiveMoves([]);
-        setActiveMessages([]);
+        setActiveMovesState({ gameId: '', moves: [] });
+        setActiveMessagesState({ gameId: '', messages: [] });
         setOnlinePlayers([]);
         setLeaderboard([]);
         setRecentMatches([]);
         setIncomingChallenges([]);
         setOutgoingChallenges([]);
         setViewMode('lobby');
+        hasRestoredInitialGameRef.current = false;
+        knownActivePvpIdsRef.current = new Set();
       }
     });
     return () => unsub();
@@ -154,11 +200,19 @@ export function ChessApp() {
     return () => unsub();
   }, [authReady, authUser, handleListenerError]);
 
+  useEffect(() => {
+    activeGameIdRef.current = activeGameId;
+  }, [activeGameId]);
+
+  useEffect(() => {
+    profileActiveGameIdRef.current = profile?.activeGameId || '';
+  }, [profile?.activeGameId]);
+
   // Set online presence and clean offline transition on page unload
   useEffect(() => {
     if (!authUser || !hasProfile) return;
     const uid = authUser.uid;
-    void setPresence(uid, true, activeGameId || '').catch((err: Error) =>
+    void setPresence(uid, true).catch((err: Error) =>
       setRuntimeFatalError(err)
     );
 
@@ -169,7 +223,7 @@ export function ChessApp() {
     return () => {
       window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [authUser, hasProfile, activeGameId]);
+  }, [authUser, hasProfile]);
 
   // Subscribe to Lobby & My Games ONLY when profile exists
   useEffect(() => {
@@ -196,15 +250,37 @@ export function ChessApp() {
 
     const unsubMyGames = subscribeMyGames(
       uid,
-      (latestActive, unappliedFinished) => {
-        if (latestActive) {
-          setActiveGameId((curr) => {
-            if (curr !== latestActive.id) {
-              soundFX.playChallenge();
+      (activeGames, unappliedFinished) => {
+        const activePvpGames = activeGames.filter((g) => !g.isBotGame);
+
+        if (!hasRestoredInitialGameRef.current) {
+          hasRestoredInitialGameRef.current = true;
+          for (const g of activePvpGames) {
+            knownActivePvpIdsRef.current.add(g.id);
+          }
+
+          if (!activeGameIdRef.current) {
+            const targetActiveId = profileActiveGameIdRef.current;
+            const toRestore =
+              activePvpGames[0] ||
+              (targetActiveId ? activeGames.find((g) => g.id === targetActiveId) : undefined);
+
+            if (toRestore) {
+              setActiveGameId(toRestore.id);
               setViewMode('game');
             }
-            return latestActive.id;
-          });
+          }
+        } else {
+          // Only auto-open newly started PvP matches while user is in the lobby (never hijack or restore stale bot games)
+          const brandNewPvp = activePvpGames.find((g) => !knownActivePvpIdsRef.current.has(g.id));
+          for (const g of activePvpGames) {
+            knownActivePvpIdsRef.current.add(g.id);
+          }
+          if (brandNewPvp && !activeGameIdRef.current) {
+            soundFX.playChallenge();
+            setActiveGameId(brandNewPvp.id);
+            setViewMode('game');
+          }
         }
 
         for (const finGame of unappliedFinished) {
@@ -234,18 +310,21 @@ export function ChessApp() {
       return;
     }
 
+    const roomGameId = activeGameId;
+    botTurnKeyRef.current = '';
+
     const unsub = subscribeGameRoom(
-      activeGameId,
+      roomGameId,
       (docSnap) => {
         setActiveGameDoc(docSnap);
-        if (docSnap?.rematchGameId && docSnap.rematchGameId !== activeGameId) {
+        if (docSnap?.rematchGameId && docSnap.rematchGameId !== roomGameId) {
           setActiveGameId(docSnap.rematchGameId);
           setViewMode('game');
           soundFX.playChallenge();
         }
       },
-      setActiveMoves,
-      setActiveMessages,
+      (moves) => setActiveMovesState({ gameId: roomGameId, moves }),
+      (messages) => setActiveMessagesState({ gameId: roomGameId, messages }),
       handleListenerError
     );
 
@@ -254,8 +333,10 @@ export function ChessApp() {
 
   const activeGame: GameState | null = useMemo(() => {
     if (!activeGameId || !activeGameDoc || activeGameDoc.id !== activeGameId) return null;
-    return assembleGameState(activeGameDoc, activeMoves, activeMessages);
-  }, [activeGameId, activeGameDoc, activeMoves, activeMessages]);
+    const moves = activeMovesState.gameId === activeGameId ? activeMovesState.moves : [];
+    const messages = activeMessagesState.gameId === activeGameId ? activeMessagesState.messages : [];
+    return assembleGameState(activeGameDoc, moves, messages);
+  }, [activeGameId, activeGameDoc, activeMovesState, activeMessagesState]);
 
   // Audio FX for moves, game end, and opponent chat messages
   useEffect(() => {
@@ -313,22 +394,42 @@ export function ChessApp() {
       ? liveClock.b
       : (activeGame?.blackTimeMs ?? 0);
 
+  useEffect(() => {
+    latestGameRef.current = activeGame;
+  }, [activeGame]);
+
+  useEffect(() => {
+    liveTimesRef.current = { w: whiteTimeMs, b: blackTimeMs };
+  }, [whiteTimeMs, blackTimeMs]);
+
+  const clockGameId = activeGame?.id || '';
+  const clockLastMoveAt = activeGame?.lastMoveAt ?? 0;
+  const clockTurn = activeGame?.turn ?? 'w';
+  const clockBaseWhiteMs = activeGame?.whiteTimeMs ?? 0;
+  const clockBaseBlackMs = activeGame?.blackTimeMs ?? 0;
+  const authUid = authUser?.uid || '';
+
   // Live clock synchronization (drift-free using lastMoveAt) + timeout detection
   useEffect(() => {
-    if (!activeGame || !isClockRunning) return;
+    if (!clockGameId || !isClockRunning) return;
 
     const tick = () => {
-      const elapsed = Math.max(0, Date.now() - activeGame.lastMoveAt);
-      const nextW =
-        activeGame.turn === 'w' ? Math.max(0, activeGame.whiteTimeMs - elapsed) : activeGame.whiteTimeMs;
-      const nextB =
-        activeGame.turn === 'b' ? Math.max(0, activeGame.blackTimeMs - elapsed) : activeGame.blackTimeMs;
-      setLiveClock({ gameId: activeGame.id, w: nextW, b: nextB });
+      const elapsed = Math.max(0, Date.now() - clockLastMoveAt);
+      const nextW = clockTurn === 'w' ? Math.max(0, clockBaseWhiteMs - elapsed) : clockBaseWhiteMs;
+      const nextB = clockTurn === 'b' ? Math.max(0, clockBaseBlackMs - elapsed) : clockBaseBlackMs;
+      setLiveClock({ gameId: clockGameId, w: nextW, b: nextB });
 
-      if (authUser && (nextW <= 0 || nextB <= 0) && timeoutClaimedIdRef.current !== activeGame.id) {
-        timeoutClaimedIdRef.current = activeGame.id;
+      const currentGame = latestGameRef.current;
+      if (
+        authUid &&
+        currentGame &&
+        currentGame.id === clockGameId &&
+        (nextW <= 0 || nextB <= 0) &&
+        timeoutClaimedIdRef.current !== clockGameId
+      ) {
+        timeoutClaimedIdRef.current = clockGameId;
         const timedOut: PieceColor = nextW <= 0 ? 'w' : 'b';
-        void claimTimeoutInFirestore(activeGame, timedOut, authUser.uid).catch((err: Error) =>
+        void claimTimeoutInFirestore(currentGame, timedOut, authUid).catch((err: Error) =>
           setRuntimeFatalError(err)
         );
       }
@@ -340,55 +441,140 @@ export function ChessApp() {
       clearTimeout(initTimer);
       clearInterval(interval);
     };
-  }, [activeGame, isClockRunning, authUser]);
+  }, [
+    clockGameId,
+    clockLastMoveAt,
+    clockTurn,
+    clockBaseWhiteMs,
+    clockBaseBlackMs,
+    isClockRunning,
+    authUid,
+  ]);
 
-  // Bot turn scheduler (runs smoothly after 280ms when it is the Bot's turn)
+  const botGameId = activeGame?.id || '';
+  const botGameStatus = activeGame?.status || '';
+  const botGameEnabled = Boolean(
+    activeGame?.isBotGame && activeGame?.botId && activeGame.botId !== 'dummy'
+  );
+  const botTurnNow = Boolean(
+    activeGame &&
+      ((activeGame.white.isBot && activeGame.turn === 'w') ||
+        (activeGame.black.isBot && activeGame.turn === 'b'))
+  );
+  const botMovesLen = activeGame?.moves.length ?? 0;
+  const docMovesCount = activeGameDoc?.movesCount ?? -1;
+  const botMovesSynced = Boolean(
+    botGameId &&
+      activeGameDoc?.id === botGameId &&
+      activeMovesState.gameId === botGameId &&
+      botMovesLen === docMovesCount
+  );
+
+  // Bot turn scheduler: depends ONLY on primitive turn/sync state so clock ticks & chat never cancel the timer
   useEffect(() => {
-    if (!authUser || !activeGame) return;
-    if (activeGame.status !== 'active' || !activeGame.isBotGame || !activeGame.botId) return;
-    if (activeGameDoc && activeGame.moves.length < activeGameDoc.movesCount) return;
+    if (!authUid || !botGameId || botGameStatus !== 'active' || !botGameEnabled) return;
+    if (!botTurnNow || !botMovesSynced) return;
 
-    const botTurn =
-      (activeGame.white.isBot && activeGame.turn === 'w') ||
-      (activeGame.black.isBot && activeGame.turn === 'b');
-    if (!botTurn) return;
-
-    const turnKey = `${activeGame.id}:${activeGame.moves.length}`;
+    const turnKey = `${botGameId}:${botMovesLen}`;
     if (botTurnKeyRef.current === turnKey) return;
-    botTurnKeyRef.current = turnKey;
-
-    const meta =
-      humanMoveMetaRef.current &&
-      humanMoveMetaRef.current.gameId === activeGame.id &&
-      humanMoveMetaRef.current.ply === activeGame.moves.length
-        ? humanMoveMetaRef.current
-        : undefined;
 
     const timer = setTimeout(() => {
+      const latestGame = latestGameRef.current;
+      if (
+        !latestGame ||
+        latestGame.id !== botGameId ||
+        latestGame.status !== 'active' ||
+        latestGame.moves.length !== botMovesLen
+      ) {
+        return;
+      }
+      if (botTurnKeyRef.current === turnKey) return;
+      botTurnKeyRef.current = turnKey;
+
+      const meta =
+        humanMoveMetaRef.current &&
+        humanMoveMetaRef.current.gameId === botGameId &&
+        humanMoveMetaRef.current.ply === botMovesLen
+          ? humanMoveMetaRef.current
+          : undefined;
+
       void runBotTurnInFirestore({
-        game: activeGame,
-        uid: authUser.uid,
-        liveWhiteMs: whiteTimeMs,
-        liveBlackMs: blackTimeMs,
+        game: latestGame,
+        uid: authUid,
+        liveWhiteMs: liveTimesRef.current.w,
+        liveBlackMs: liveTimesRef.current.b,
         humanLastMoveMeta: meta,
-      }).catch((err: Error) => setRuntimeFatalError(err));
+      })
+        .then((submitted) => {
+          if (!submitted && botTurnKeyRef.current === turnKey) {
+            botTurnKeyRef.current = '';
+          }
+        })
+        .catch((err: Error) => {
+          if (botTurnKeyRef.current === turnKey) {
+            botTurnKeyRef.current = '';
+          }
+          setRuntimeFatalError(err);
+        });
     }, 280);
 
     return () => clearTimeout(timer);
-  }, [authUser, activeGame, activeGameDoc, whiteTimeMs, blackTimeMs]);
+  }, [authUid, botGameId, botGameStatus, botGameEnabled, botTurnNow, botMovesLen, botMovesSynced]);
 
   async function handleGoogleSignIn() {
     setAuthError(null);
     setConnecting(true);
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
-      if (!msg.includes('popup-closed-by-user')) {
-        setAuthError('Accesso con Google non riuscito. Riprova.');
+    } catch (err: unknown) {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code || '')
+          : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        return;
       }
+      if (code === 'auth/popup-blocked') {
+        if (typeof window !== 'undefined' && window.self === window.top) {
+          try {
+            await signInWithRedirect(auth, googleProvider);
+            return;
+          } catch {
+            // fall through to clear message
+          }
+        }
+        setAuthError('Il browser ha bloccato il popup di Google. Consenti i popup per questo sito e riprova.');
+        return;
+      }
+      if (code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
+        setAuthError(
+          `Dominio "${host}" non autorizzato su Firebase. Aggiungilo in Firebase Console → Authentication → Settings → Authorized domains.`
+        );
+        return;
+      }
+      if (code === 'auth/operation-not-allowed') {
+        setAuthError('Accesso Google non abilitato su Firebase Console (Authentication → Sign-in method).');
+        return;
+      }
+      console.error('Google Sign-In error:', code, err);
+      setAuthError(
+        code
+          ? `Accesso con Google non riuscito (${code}). Riprova.`
+          : 'Accesso con Google non riuscito. Riprova.'
+      );
     } finally {
       setConnecting(false);
+    }
+  }
+
+  function handleLocaleChange(opt: WorldLocaleOption) {
+    setSelectedLocale({ lang: opt.lang, country: opt.country });
+    if (authUser && profile) {
+      setProfile((prev) => (prev ? { ...prev, lang: opt.lang, country: opt.country } : prev));
+      void updateUserLocale(authUser.uid, opt.lang, opt.country).catch((err: Error) =>
+        setRuntimeFatalError(err)
+      );
     }
   }
 
@@ -397,7 +583,12 @@ export function ChessApp() {
     setAuthError(null);
     setConnecting(true);
     try {
-      const res = await registerBioChessUsername(authUser.uid, username);
+      const res = await registerBioChessUsername(
+        authUser.uid,
+        username,
+        selectedLocale.lang,
+        selectedLocale.country
+      );
       if (!res.ok) {
         setAuthError(res.error);
       } else {
@@ -467,6 +658,22 @@ export function ChessApp() {
 
   const needsUsernameChoice = Boolean(authReady && authUser && profileLoaded && !profile);
 
+  function navigateToLobbyTab(tab?: LobbyTab) {
+    if (activeGame && activeGame.status !== 'active') {
+      setActiveGameId(null);
+      setActiveGameDoc(null);
+      setActiveMovesState({ gameId: '', moves: [] });
+      setActiveMessagesState({ gameId: '', messages: [] });
+      if (authUser) {
+        void setPresence(authUser.uid, true, '').catch(() => {});
+      }
+    }
+    if (tab) {
+      setLobbyTab(tab);
+    }
+    setViewMode('lobby');
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-[#302E2B] text-[#F3F3F2]">
       {/* Top Bar Contract: 3 zones separated by gap-8 */}
@@ -475,7 +682,7 @@ export function ChessApp() {
           {/* Zone 1: BioChess Emblem + Wordmark */}
           <button
             type="button"
-            onClick={() => setViewMode('lobby')}
+            onClick={() => navigateToLobbyTab()}
             className="inline-flex items-center gap-2.5 text-lg font-extrabold tracking-tight text-white whitespace-nowrap shrink-0"
           >
             <span className="relative w-9 h-9 rounded overflow-hidden border border-[#3C3A36] bg-[#0F1419] shrink-0">
@@ -496,42 +703,33 @@ export function ChessApp() {
             <nav className="hidden md:flex items-center gap-6 text-sm font-bold text-[#BABABA]">
               <button
                 type="button"
-                onClick={() => {
-                  setLobbyTab('challenge');
-                  setViewMode('lobby');
-                }}
+                onClick={() => navigateToLobbyTab('challenge')}
                 className={`inline-flex items-center gap-1.5 hover:text-white transition-colors whitespace-nowrap shrink-0 ${
                   viewMode === 'lobby' && lobbyTab === 'challenge' ? 'text-white' : ''
                 }`}
               >
                 <Swords className="w-4 h-4 text-[#81B64C]" />
-                <span>Gioca</span>
+                <span>{dict.navPlay}</span>
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setLobbyTab('bots');
-                  setViewMode('lobby');
-                }}
+                onClick={() => navigateToLobbyTab('bots')}
                 className={`inline-flex items-center gap-1.5 hover:text-white transition-colors whitespace-nowrap shrink-0 ${
                   viewMode === 'lobby' && lobbyTab === 'bots' ? 'text-white' : ''
                 }`}
               >
                 <Bot className="w-4 h-4 text-[#81B64C]" />
-                <span>Bot</span>
+                <span>{dict.navBots}</span>
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setLobbyTab('leaderboard');
-                  setViewMode('lobby');
-                }}
+                onClick={() => navigateToLobbyTab('leaderboard')}
                 className={`inline-flex items-center gap-1.5 hover:text-white transition-colors whitespace-nowrap shrink-0 ${
                   viewMode === 'lobby' && lobbyTab === 'leaderboard' ? 'text-white' : ''
                 }`}
               >
                 <Trophy className="w-4 h-4 text-[#E6912C]" />
-                <span>Classifica</span>
+                <span>{dict.navLeaderboard}</span>
               </button>
               {activeGame && (
                 <button
@@ -541,14 +739,21 @@ export function ChessApp() {
                     viewMode === 'game' ? 'text-[#81B64C]' : ''
                   }`}
                 >
-                  Partita
+                  {dict.navGame}
                 </button>
               )}
             </nav>
           )}
 
-          {/* Zone 3: 1 primary user action */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Zone 3: Language selector + 1 primary user action */}
+          <div className="flex items-center gap-2 shrink-0">
+            <LanguagePicker
+              lang={activeLang}
+              country={activeCountry}
+              onChange={handleLocaleChange}
+              searchPlaceholder={dict.searchLanguage}
+              variant="compact"
+            />
             {profile ? (
               activeGame && activeGame.status === 'active' && viewMode === 'lobby' ? (
                 <button
@@ -556,7 +761,7 @@ export function ChessApp() {
                   onClick={() => setViewMode('game')}
                   className="px-3.5 py-1.5 rounded bg-[#81B64C] hover:bg-[#95C85E] text-white text-xs font-bold border-b-2 border-[#5D8A32] whitespace-nowrap shrink-0"
                 >
-                  Torna in partita
+                  {dict.backToGame}
                 </button>
               ) : (
                 <button
@@ -564,13 +769,18 @@ export function ChessApp() {
                   onClick={() => void handleLogout()}
                   className="px-3 py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[#E5E4E2] text-xs font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0"
                 >
-                  <span className="max-w-[120px] truncate">{profile.username}</span>
+                  {countryCodeToFlag(profile.country) && (
+                    <span className="text-sm leading-none shrink-0" aria-hidden="true">
+                      {countryCodeToFlag(profile.country)}
+                    </span>
+                  )}
+                  <span className="max-w-[110px] truncate">{profile.username}</span>
                   <LogOut className="w-3.5 h-3.5 text-[#9E9D9A]" />
                 </button>
               )
             ) : (
-              <span className="text-xs font-semibold text-[#9E9D9A] whitespace-nowrap shrink-0">
-                {authReady ? 'Pronto' : 'Connessione...'}
+              <span className="hidden sm:inline text-xs font-semibold text-[#9E9D9A] whitespace-nowrap shrink-0">
+                {authReady ? dict.ready : dict.connecting}
               </span>
             )}
           </div>
@@ -581,12 +791,16 @@ export function ChessApp() {
         {!profile ? (
           <UsernameGateModal
             step={needsUsernameChoice ? 'choose_username' : 'google'}
+            lang={activeLang}
+            country={activeCountry}
+            dict={dict}
             error={authError}
             connecting={
               !authReady ||
               connecting ||
               Boolean(authUser && !profileLoaded)
             }
+            onLocaleChange={handleLocaleChange}
             onGoogleSignIn={() => void handleGoogleSignIn()}
             onCreateProfile={(u) => void handleCreateProfile(u)}
             onSwitchGoogleAccount={() => void handleLogout()}
@@ -612,6 +826,7 @@ export function ChessApp() {
                 <GameWorkspace
                   game={activeGame}
                   myUsername={profile.username}
+                  dict={dict}
                   whiteTimeMs={whiteTimeMs}
                   blackTimeMs={blackTimeMs}
                   muted={muted}
@@ -671,15 +886,7 @@ export function ChessApp() {
                       })
                       .catch((err: Error) => setRuntimeFatalError(err));
                   }}
-                  onBackToLobby={() => {
-                    if (activeGame.status !== 'active') {
-                      setActiveGameId(null);
-                      if (authUser) {
-                        void setPresence(authUser.uid, true, '').catch(() => {});
-                      }
-                    }
-                    setViewMode('lobby');
-                  }}
+                  onBackToLobby={() => navigateToLobbyTab()}
                 />
               </motion.div>
             ) : (
@@ -692,6 +899,7 @@ export function ChessApp() {
               >
                 <LobbyView
                   myProfile={profile}
+                  dict={dict}
                   activeTab={lobbyTab}
                   onTabChange={setLobbyTab}
                   onlinePlayers={onlinePlayers}
@@ -766,6 +974,7 @@ export function ChessApp() {
       {profile && incomingChallenges.length > 0 && viewMode === 'game' && (
         <IncomingChallengeToast
           challenge={incomingChallenges[0]}
+          dict={dict}
           onAccept={() => {
             if (!authUser) return;
             void respondToChallenge(incomingChallenges[0].id, true, authUser.uid)

@@ -18,6 +18,7 @@ import {
 } from 'firebase/firestore';
 import {
   BOT_DEFINITIONS,
+  isTrainingBot,
   TIME_CONTROLS,
   type BotId,
   type Challenge,
@@ -43,15 +44,45 @@ import { db, handleFirestoreError, OperationType } from './firebase';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const USERNAME_REGEX = /^[a-zA-Z0-9_]{2,20}$/;
+const VALID_BOT_IDS = new Set<BotId>([
+  'knight',
+  'bishop',
+  'king',
+  'master',
+  'dummy',
+  'alien',
+  'gothamchess',
+  'mittens',
+]);
 const RESERVED_USERNAMES = new Set([
+  'duolingo',
+  'luna',
+  'martin',
+  'master',
   'bot_cavallo',
   'bot_alfiere',
   'bot_re',
+  'coach_alien',
+  'coach_gothamchess',
+  'coach_mittens',
+  'dummy_training',
   'biochess',
   'sistema',
   'system',
   'bot',
 ]);
+
+function sanitizeCountryCode(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const upper = raw.trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(upper) ? upper : undefined;
+}
+
+function sanitizeLangCode(raw: unknown): string {
+  if (typeof raw !== 'string') return 'it';
+  const cleaned = raw.trim().toLowerCase().slice(0, 16);
+  return cleaned.length >= 2 ? cleaned : 'it';
+}
 
 export function makeEntityId(prefix: string): string {
   const rand =
@@ -108,10 +139,12 @@ export interface GameDocSnapshot {
   whiteUsername: string;
   whiteElo: number;
   whiteIsBot: boolean;
+  whiteCountry?: string;
   blackUid: string;
   blackUsername: string;
   blackElo: number;
   blackIsBot: boolean;
+  blackCountry?: string;
   participantUids: string[];
   fen: string;
   pgn: string;
@@ -147,20 +180,26 @@ function mapUserDocToSummary(data: Record<string, unknown>): PlayerSummary {
     draws: typeof data.draws === 'number' ? data.draws : 0,
     status: !online ? 'offline' : activeGameId ? 'in_game' : 'online',
     activeGameId: activeGameId || null,
+    lang: typeof data.lang === 'string' ? sanitizeLangCode(data.lang) : undefined,
+    country: sanitizeCountryCode(data.country),
   };
 }
 
 function mapGameDoc(id: string, data: Record<string, unknown>): GameDocSnapshot {
+  const rawBotId = typeof data.botId === 'string' ? (data.botId as BotId) : '';
+  const botId: BotId | '' = rawBotId && VALID_BOT_IDS.has(rawBotId) ? rawBotId : '';
   return {
     id,
     whiteUid: String(data.whiteUid || ''),
     whiteUsername: String(data.whiteUsername || ''),
     whiteElo: typeof data.whiteElo === 'number' ? data.whiteElo : 300,
     whiteIsBot: Boolean(data.whiteIsBot),
+    whiteCountry: sanitizeCountryCode(data.whiteCountry),
     blackUid: String(data.blackUid || ''),
     blackUsername: String(data.blackUsername || ''),
     blackElo: typeof data.blackElo === 'number' ? data.blackElo : 300,
     blackIsBot: Boolean(data.blackIsBot),
+    blackCountry: sanitizeCountryCode(data.blackCountry),
     participantUids: Array.isArray(data.participantUids)
       ? data.participantUids.map((u) => String(u))
       : [],
@@ -186,10 +225,7 @@ function mapGameDoc(id: string, data: Record<string, unknown>): GameDocSnapshot 
     whiteEloApplied: Boolean(data.whiteEloApplied),
     blackEloApplied: Boolean(data.blackEloApplied),
     isBotGame: Boolean(data.isBotGame),
-    botId:
-      data.botId === 'knight' || data.botId === 'bishop' || data.botId === 'king'
-        ? data.botId
-        : '',
+    botId,
     lastMoveAtMs: tsToMs(data.lastMoveAt),
     createdAtMs: tsToMs(data.createdAt),
     updatedAtMs: tsToMs(data.updatedAt),
@@ -210,6 +246,7 @@ export function assembleGameState(
       elo: docSnap.whiteElo,
       isBot: docSnap.whiteIsBot,
       botId: docSnap.whiteIsBot ? botIdVal : undefined,
+      country: docSnap.whiteCountry,
     },
     black: {
       uid: docSnap.blackUid,
@@ -217,6 +254,7 @@ export function assembleGameState(
       elo: docSnap.blackElo,
       isBot: docSnap.blackIsBot,
       botId: docSnap.blackIsBot ? botIdVal : undefined,
+      country: docSnap.blackCountry,
     },
     fen: docSnap.fen,
     pgn: docSnap.pgn,
@@ -243,10 +281,15 @@ export function assembleGameState(
 
 export async function registerBioChessUsername(
   uid: string,
-  rawUsername: string
+  rawUsername: string,
+  rawLang = 'it',
+  rawCountry = 'IT'
 ): Promise<{ ok: true; profile: PlayerSummary } | { ok: false; error: string }> {
   const v = validateUsernameInput(rawUsername);
   if (!v.ok) return v;
+
+  const lang = sanitizeLangCode(rawLang);
+  const country = sanitizeCountryCode(rawCountry) || 'IT';
 
   const usernamePath = `usernames/${v.key}`;
   try {
@@ -275,6 +318,8 @@ export async function registerBioChessUsername(
       draws: 0,
       online: true,
       activeGameId: '',
+      lang,
+      country,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -291,10 +336,31 @@ export async function registerBioChessUsername(
         draws: 0,
         status: 'online',
         activeGameId: null,
+        lang,
+        country,
       },
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${uid}`);
+  }
+}
+
+export async function updateUserLocale(
+  uid: string,
+  rawLang: string,
+  rawCountry: string
+): Promise<void> {
+  const path = `users/${uid}`;
+  const lang = sanitizeLangCode(rawLang);
+  const country = sanitizeCountryCode(rawCountry) || 'IT';
+  try {
+    await updateDoc(doc(db, 'users', uid), {
+      lang,
+      country,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 
@@ -450,8 +516,10 @@ export function subscribeChallenges(
     fromUid: String(data.fromUid || ''),
     from: String(data.fromUsername || ''),
     fromElo: typeof data.fromElo === 'number' ? data.fromElo : 300,
+    fromCountry: sanitizeCountryCode(data.fromCountry),
     toUid: String(data.toUid || ''),
     to: String(data.toUsername || ''),
+    toCountry: sanitizeCountryCode(data.toCountry),
     timeControl: (data.timeControl as TimeControlId) || 'blitz_5_0',
     colorPref: (data.colorPref as ColorPref) || 'random',
     createdAt: tsToMs(data.createdAt),
@@ -513,13 +581,13 @@ export function subscribeChallenges(
 
 export function subscribeMyGames(
   uid: string,
-  onGamesUpdate: (activeGame: GameDocSnapshot | null, unappliedFinished: GameDocSnapshot[]) => void,
+  onGamesUpdate: (activeGames: GameDocSnapshot[], unappliedFinished: GameDocSnapshot[]) => void,
   onError: (err: Error) => void
 ): Unsubscribe {
   const q = query(
     collection(db, 'games'),
     where('participantUids', 'array-contains', uid),
-    limit(25)
+    limit(200)
   );
   return onSnapshot(
     q,
@@ -536,7 +604,7 @@ export function subscribeMyGames(
         return (isWhite && !g.whiteEloApplied) || (isBlack && !g.blackEloApplied);
       });
 
-      onGamesUpdate(activeGames[0] || null, unapplied);
+      onGamesUpdate(activeGames, unapplied);
     },
     (error) => {
       try {
@@ -670,20 +738,24 @@ export async function sendChallengeToUser(
   }
 
   let targetUsername = trimmed;
+  let targetCountry: string | undefined;
   try {
     const userSnap = await getDoc(doc(db, 'users', targetUid));
     if (!userSnap.exists()) {
       return { ok: false, error: `Giocatore "${trimmed}" non disponibile.` };
     }
-    targetUsername = String(userSnap.data().username || trimmed).slice(0, 20);
+    const targetData = userSnap.data();
+    targetUsername = String(targetData.username || trimmed).slice(0, 20);
+    targetCountry = sanitizeCountryCode(targetData.country);
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${targetUid}`);
   }
 
+  const fromCountry = sanitizeCountryCode(me.country);
   const challengeId = makeEntityId('ch');
   try {
     const batch = writeBatch(db);
-    batch.set(doc(db, 'challenges', challengeId), {
+    const challengePayload: Record<string, unknown> = {
       id: challengeId,
       fromUid: myUid,
       fromUsername: me.username.slice(0, 20),
@@ -697,7 +769,11 @@ export async function sendChallengeToUser(
       expiresAtMs: Date.now() + 5 * 60 * 1000,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (fromCountry) challengePayload.fromCountry = fromCountry;
+    if (targetCountry) challengePayload.toCountry = targetCountry;
+
+    batch.set(doc(db, 'challenges', challengeId), challengePayload);
     await batch.commit();
     return { ok: true };
   } catch (error) {
@@ -749,8 +825,8 @@ export async function respondToChallenge(
   const timeControl = (chData.timeControl as TimeControlId) || 'blitz_5_0';
   const colorPref = (chData.colorPref as ColorPref) || 'random';
 
-  let fromProfile: { username: string; elo: number };
-  let toProfile: { username: string; elo: number };
+  let fromProfile: { username: string; elo: number; country?: string };
+  let toProfile: { username: string; elo: number; country?: string };
   try {
     const [fromSnap, toSnap] = await Promise.all([
       getDoc(doc(db, 'users', fromUid)),
@@ -759,13 +835,17 @@ export async function respondToChallenge(
     if (!fromSnap.exists() || !toSnap.exists()) {
       return { ok: false, error: 'Uno dei giocatori non è più disponibile.' };
     }
+    const fd = fromSnap.data();
+    const td = toSnap.data();
     fromProfile = {
-      username: String(fromSnap.data().username || chData.fromUsername || ''),
-      elo: typeof fromSnap.data().elo === 'number' ? fromSnap.data().elo : 300,
+      username: String(fd.username || chData.fromUsername || ''),
+      elo: typeof fd.elo === 'number' ? fd.elo : 300,
+      country: sanitizeCountryCode(fd.country) || sanitizeCountryCode(chData.fromCountry),
     };
     toProfile = {
-      username: String(toSnap.data().username || chData.toUsername || ''),
-      elo: typeof toSnap.data().elo === 'number' ? toSnap.data().elo : 300,
+      username: String(td.username || chData.toUsername || ''),
+      elo: typeof td.elo === 'number' ? td.elo : 300,
+      country: sanitizeCountryCode(td.country) || sanitizeCountryCode(chData.toCountry),
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, `users/${fromUid}`);
@@ -777,10 +857,12 @@ export async function respondToChallenge(
   const whiteUid = challengerPlaysWhite ? fromUid : toUid;
   const whiteUsername = (challengerPlaysWhite ? fromProfile.username : toProfile.username).slice(0, 32);
   const whiteElo = challengerPlaysWhite ? fromProfile.elo : toProfile.elo;
+  const whiteCountry = challengerPlaysWhite ? fromProfile.country : toProfile.country;
 
   const blackUid = challengerPlaysWhite ? toUid : fromUid;
   const blackUsername = (challengerPlaysWhite ? toProfile.username : fromProfile.username).slice(0, 32);
   const blackElo = challengerPlaysWhite ? toProfile.elo : fromProfile.elo;
+  const blackCountry = challengerPlaysWhite ? toProfile.country : fromProfile.country;
 
   const gameId = makeEntityId('game');
   const tc = TIME_CONTROLS[timeControl];
@@ -788,7 +870,7 @@ export async function respondToChallenge(
 
   try {
     const batch = writeBatch(db);
-    batch.set(doc(db, 'games', gameId), {
+    const gamePayload: Record<string, unknown> = {
       id: gameId,
       whiteUid,
       whiteUsername,
@@ -819,7 +901,11 @@ export async function respondToChallenge(
       lastMoveAt: serverTimestamp(),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (whiteCountry) gamePayload.whiteCountry = whiteCountry;
+    if (blackCountry) gamePayload.blackCountry = blackCountry;
+
+    batch.set(doc(db, 'games', gameId), gamePayload);
     batch.set(doc(db, 'games', gameId, 'messages', startMsgId), {
       id: startMsgId,
       sender: 'BioChess',
@@ -860,9 +946,14 @@ export async function createBotGameInFirestore(
   const tc = TIME_CONTROLS[timeControl];
   const greetMsgId = makeEntityId('msg');
 
+  const myCountry = sanitizeCountryCode(me.country);
+  const botCountry = sanitizeCountryCode(bot.country);
+  const whiteCountry = playerPlaysWhite ? myCountry : botCountry;
+  const blackCountry = playerPlaysWhite ? botCountry : myCountry;
+
   try {
     const batch = writeBatch(db);
-    batch.set(doc(db, 'games', gameId), {
+    const gamePayload: Record<string, unknown> = {
       id: gameId,
       whiteUid: playerPlaysWhite ? myUid : 'bot',
       whiteUsername: (playerPlaysWhite ? me.username : bot.name).slice(0, 32),
@@ -893,7 +984,11 @@ export async function createBotGameInFirestore(
       lastMoveAt: serverTimestamp(),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (whiteCountry) gamePayload.whiteCountry = whiteCountry;
+    if (blackCountry) gamePayload.blackCountry = blackCountry;
+
+    batch.set(doc(db, 'games', gameId), gamePayload);
     batch.set(doc(db, 'games', gameId, 'messages', greetMsgId), {
       id: greetMsgId,
       sender: bot.name.slice(0, 32),
@@ -1074,15 +1169,17 @@ export async function runBotTurnInFirestore(params: {
   liveWhiteMs: number;
   liveBlackMs: number;
   humanLastMoveMeta?: { quality: GameMove['quality']; captured?: string; inCheck: boolean };
-}): Promise<void> {
+}): Promise<boolean> {
   const { game, uid, liveWhiteMs, liveBlackMs, humanLastMoveMeta } = params;
-  if (game.status !== 'active' || !game.isBotGame || !game.botId) return;
+  if (game.status !== 'active' || !game.isBotGame || !game.botId || game.botId === 'dummy') {
+    return false;
+  }
 
   const botColor: PieceColor = game.white.isBot ? 'w' : 'b';
-  if (game.turn !== botColor) return;
+  if (game.turn !== botColor) return false;
 
   const botMove = chooseBotMove(game.fen, game.botId);
-  if (!botMove) return;
+  if (!botMove) return false;
 
   let botComment: string | null = null;
   if (humanLastMoveMeta) {
@@ -1105,7 +1202,11 @@ export async function runBotTurnInFirestore(params: {
     botChatText: botComment,
   });
 
-  if (res.ok && res.nextStatus === 'checkmate' && game.botId) {
+  if (!res.ok) {
+    return false;
+  }
+
+  if (res.nextStatus === 'checkmate' && game.botId) {
     const winMsg = getBotMoveComment(game.botId, 'checkmate_win');
     if (winMsg) {
       await sendSystemOrBotChatMessage({
@@ -1116,7 +1217,7 @@ export async function runBotTurnInFirestore(params: {
         kind: 'bot',
       });
     }
-  } else if (res.ok && res.nextStatus === 'active' && game.botId && !botComment) {
+  } else if (res.nextStatus === 'active' && game.botId && !botComment) {
     if (res.captured === 'q') {
       const text = getBotMoveComment(game.botId, 'capture_queen');
       if (text) {
@@ -1141,6 +1242,8 @@ export async function runBotTurnInFirestore(params: {
       }
     }
   }
+
+  return true;
 }
 
 export async function sendSystemOrBotChatMessage(params: {
@@ -1331,7 +1434,8 @@ export async function offerDrawInFirestore(
   if (game.isBotGame && game.botId) {
     const botId = game.botId;
     const chess = new Chess(game.fen);
-    const botAccepts = game.moves.length >= 24 && !chess.inCheck() && botId === 'knight';
+    const botAccepts =
+      botId === 'dummy' || (game.moves.length >= 24 && !chess.inCheck() && botId === 'knight');
     setTimeout(() => {
       void respondDrawInFirestore(
         { ...game, drawOfferBy: myColor },
@@ -1443,9 +1547,12 @@ export async function requestOrAcceptRematchInFirestore(
     (u): u is string => Boolean(u && u !== 'bot')
   );
 
+  const nextWhiteCountry = sanitizeCountryCode(nextWhite.country);
+  const nextBlackCountry = sanitizeCountryCode(nextBlack.country);
+
   try {
     const batch = writeBatch(db);
-    batch.set(doc(db, 'games', newGameId), {
+    const rematchPayload: Record<string, unknown> = {
       id: newGameId,
       whiteUid: nextWhite.isBot ? 'bot' : String(nextWhite.uid || ''),
       whiteUsername: nextWhite.username.slice(0, 32),
@@ -1476,7 +1583,11 @@ export async function requestOrAcceptRematchInFirestore(
       lastMoveAt: serverTimestamp(),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (nextWhiteCountry) rematchPayload.whiteCountry = nextWhiteCountry;
+    if (nextBlackCountry) rematchPayload.blackCountry = nextBlackCountry;
+
+    batch.set(doc(db, 'games', newGameId), rematchPayload);
     batch.set(doc(db, 'games', newGameId, 'messages', msgId), {
       id: msgId,
       sender: game.isBotGame && game.botId ? BOT_DEFINITIONS[game.botId].name : 'BioChess',
@@ -1522,6 +1633,23 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
     if (latestGame.status === 'active') return;
     if ((isWhite && latestGame.whiteEloApplied) || (isBlack && latestGame.blackEloApplied)) return;
 
+    const batch = writeBatch(db);
+
+    // Training games against Coaches or Dummy do NOT affect ranked ELO or W/L/D stats
+    if (latestGame.isBotGame && isTrainingBot(latestGame.botId)) {
+      batch.update(doc(db, 'users', uid), {
+        online: true,
+        activeGameId: '',
+        updatedAt: serverTimestamp(),
+      });
+      batch.update(doc(db, 'games', gameDoc.id), {
+        [isWhite ? 'whiteEloApplied' : 'blackEloApplied']: true,
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+      return;
+    }
+
     const u = userSnap.data();
     const curElo = typeof u.elo === 'number' ? u.elo : 300;
     const curWins = typeof u.wins === 'number' ? u.wins : 0;
@@ -1544,7 +1672,6 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
       nextElo = Math.max(0, curElo - 76);
     }
 
-    const batch = writeBatch(db);
     batch.update(doc(db, 'users', uid), {
       elo: nextElo,
       wins: nextWins,

@@ -1,6 +1,8 @@
 import { Chess } from 'chess.js';
 import type { Move, PieceSymbol } from 'chess.js';
-import type { BotId, MoveQuality, PieceColor } from './types.ts';
+import type { BotId, GameMove, MoveQuality, PieceColor } from './types';
+
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 const PIECE_VALUES: Record<PieceSymbol, number> = {
   p: 100,
@@ -109,7 +111,6 @@ export function getMaterialBalance(chess: Chess, perspective: PieceColor): numbe
   return mat;
 }
 
-// Fast leaf evaluator: zero internal chess.moves() calls!
 function evaluateStatic(chess: Chess, perspective: PieceColor): number {
   const board = chess.board();
   let score = 0;
@@ -155,7 +156,6 @@ function orderMoves(moves: Move[]): Move[] {
   return moves.sort((a, b) => scoreMoveOrder(b) - scoreMoveOrder(a));
 }
 
-// Fast 1-ply capture resolution (no full move generation loop at leaf!)
 function fastQuiescence(
   chess: Chess,
   alpha: number,
@@ -273,11 +273,6 @@ function alphaBeta(
   }
 }
 
-/**
- * Fast, lag-free move evaluator (< 15ms per move):
- * 1. Fast 1-ply scan across legal moves using static eval + best immediate capture reply.
- * 2. Deep verification on top 5 candidate moves + the played move.
- */
 export function evaluatePlayedMove(
   fenBefore: string,
   from: string,
@@ -299,7 +294,6 @@ export function evaluatePlayedMove(
   const materialBefore = getMaterialBalance(chess, perspective);
   const deadline = Date.now() + 120;
 
-  // Step 1: Ultra-fast 1-ply + immediate-capture-exchange scan (< 4ms)
   const fastScores: Array<{
     move: Move;
     fastScore: number;
@@ -316,7 +310,7 @@ export function evaluatePlayedMove(
     } else {
       const oppReplies = chess.moves({ verbose: true });
       if (oppReplies.length === 0) {
-        fastScore = 0; // stalemate
+        fastScore = 0;
       } else {
         for (const r of oppReplies) {
           if (r.captured && PIECE_VALUES[r.captured] > worstOppCapture) {
@@ -348,7 +342,6 @@ export function evaluatePlayedMove(
     return { quality: 'neutral', cpLoss: 0 };
   }
 
-  // Step 2: Refine playedFast + top checks + top fastScores (max 6 candidates)
   const candidates: typeof fastScores = [playedFast];
   for (const entry of fastScores) {
     if (candidates.length >= 6) break;
@@ -406,7 +399,6 @@ export function evaluatePlayedMove(
     return { quality: 'blunder', cpLoss };
   }
 
-  // Opening learning phase before move 4 (moves 1, 2, 3)
   if (moveNumber < 4 && playedScore < 90000) {
     return { quality: 'book', cpLoss };
   }
@@ -462,10 +454,39 @@ export function chooseBotMove(fen: string, botId: BotId): Move | null {
   const legalMoves = orderMoves(chess.moves({ verbose: true }));
   if (legalMoves.length === 0) return null;
 
+  // Training Dummy: passive non-aggressive target so the player can practice tactics/mate freely
+  if (botId === 'dummy') {
+    const quietMoves = legalMoves.filter((m) => !m.captured && !m.san.includes('#') && !m.san.includes('+'));
+    const pool = quietMoves.length > 0 ? quietMoves : legalMoves;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
   const perspective = chess.turn();
-  const depth = botId === 'knight' ? 1 : 2;
-  const useQuiescence = botId === 'king';
-  const deadline = Date.now() + (botId === 'king' ? 140 : 60);
+  const depth =
+    botId === 'knight'
+      ? 1
+      : botId === 'bishop' || botId === 'king' || botId === 'alien'
+        ? 2
+        : 3;
+  const useQuiescence =
+    botId === 'king' ||
+    botId === 'master' ||
+    botId === 'alien' ||
+    botId === 'gothamchess' ||
+    botId === 'mittens';
+  const budgetMs =
+    botId === 'mittens'
+      ? 340
+      : botId === 'master'
+        ? 260
+        : botId === 'gothamchess'
+          ? 220
+          : botId === 'alien'
+            ? 160
+            : botId === 'king'
+              ? 140
+              : 60;
+  const deadline = Date.now() + budgetMs;
 
   const scored: Array<{ move: Move; score: number }> = [];
 
@@ -492,9 +513,19 @@ export function chooseBotMove(fen: string, botId: BotId): Move | null {
         ? (Math.random() - 0.5) * 90
         : botId === 'bishop'
           ? (Math.random() - 0.5) * 14
-          : (Math.random() - 0.5) * 4;
+          : botId === 'king'
+            ? (Math.random() - 0.5) * 4
+            : botId === 'alien'
+              ? (Math.random() - 0.5) * 3
+              : botId === 'gothamchess'
+                ? (Math.random() - 0.5) * 2
+                : 0; // master & mittens: zero jitter
 
-    scored.push({ move, score: rawScore + jitter });
+    // GothamChess loves active rook moves & checks
+    const styleBonus =
+      botId === 'gothamchess' && move.piece === 'r' ? 8 : 0;
+
+    scored.push({ move, score: rawScore + jitter + styleBonus });
   }
 
   scored.sort((a, b) => b.score - a.score);
@@ -507,32 +538,102 @@ export function chooseBotMove(fen: string, botId: BotId): Move | null {
   return scored[0].move;
 }
 
+export interface PostGameReviewData {
+  accuracyPct: number;
+  bestMoveByPly: Record<number, string>;
+}
+
+/**
+ * Computes post-game accuracy and best-move suggestions (used exclusively after Coach/Dummy games).
+ */
+export function computePostGameReview(
+  moves: GameMove[],
+  playerColor: PieceColor
+): PostGameReviewData {
+  const bestMoveByPly: Record<number, string> = {};
+  const playerLosses: number[] = [];
+
+  for (let i = 0; i < moves.length; i++) {
+    const move = moves[i];
+    if (move.color !== playerColor) continue;
+    const loss = typeof move.cpLoss === 'number' ? Math.min(600, move.cpLoss) : 0;
+    playerLosses.push(loss);
+
+    if (move.quality === 'mistake' || move.quality === 'blunder' || move.quality === 'neutral') {
+      const fenBefore = i === 0 ? START_FEN : moves[i - 1]?.fen || START_FEN;
+      try {
+        const best = chooseBotMove(fenBefore, 'king');
+        if (best && best.san !== move.san) {
+          bestMoveByPly[i] = best.san;
+        }
+      } catch {
+        // skip best-move hint if a historical FEN is malformed
+      }
+    }
+  }
+
+  if (playerLosses.length === 0) {
+    return { accuracyPct: 100, bestMoveByPly };
+  }
+
+  const avgLoss = playerLosses.reduce((acc, v) => acc + v, 0) / playerLosses.length;
+  const rawAcc = 100 * Math.exp(-avgLoss / 180);
+  const accuracyPct = Math.max(10, Math.min(99, Math.round(rawAcc)));
+
+  return { accuracyPct, bestMoveByPly };
+}
+
 export function getBotGreeting(botId: BotId, opponentUsername: string): string {
   switch (botId) {
     case 'knight':
-      return `Glhf ${opponentUsername}!`;
+      return `Ciao ${opponentUsername}! Pronto a salvare la tua serie su Duolingo? Buona partita!`;
     case 'bishop':
-      return `Buona partita, ${opponentUsername}.`;
+      return `Ciao ${opponentUsername}, buona partita sotto la Luna!`;
     case 'king':
-      return `Tocca a te, ${opponentUsername}.`;
+      return `Ehilà ${opponentUsername}! Sono Martin, giochiamo una bella partita!`;
+    case 'master':
+      return `${opponentUsername}. Mostra il tuo miglior gioco.`;
+    case 'dummy':
+      return `Modalità Dummy attiva, ${opponentUsername}! Muovi tu sia i tuoi pezzi che il Dummy e guarda la revisione a fine partita.`;
+    case 'alien':
+      return `Saluti dal cosmo, ${opponentUsername}. Analizzeremo i tuoi piani a fine partita.`;
+    case 'gothamchess':
+      return `Ehi ${opponentUsername}! Pronto per THE ROOOOK? A fine partita facciamo la revisione insieme!`;
+    case 'mittens':
+      return `Miao, ${opponentUsername}... Giochiamo. Alla fine vedremo quanti errori hai fatto.`;
   }
 }
 
 export function getBotQualityReaction(botId: BotId, quality: MoveQuality): string | null {
   if (quality === 'blunder') {
-    if (botId === 'knight') return 'Ops! Blunder (??)';
+    if (botId === 'knight') return 'Ops! Hai perso una vita (??)';
     if (botId === 'bishop') return 'Ahi, blunder (??).';
-    return 'Errore grave (??).';
+    if (botId === 'king') return 'Ehi, sicurezza dei pezzi! Blunder (??).';
+    if (botId === 'master') return 'Errore decisivo.';
+    if (botId === 'dummy') return 'Occhio! Controlliamo questa mossa nella revisione finale.';
+    if (botId === 'alien') return 'Anomalia tattica rilevata... ne riparliamo a fine partita.';
+    if (botId === 'gothamchess') return 'OH NO! Che stai facendo?! La rivediamo alla fine!';
+    return 'Miao... grazie del regalo.';
   }
   if (quality === 'brilliant') {
-    if (botId === 'knight') return 'Che mossa!!';
+    if (botId === 'knight') return 'Che mossa da 100 XP!!';
     if (botId === 'bishop') return 'Brillante (!!)';
-    return 'Sacrificio preciso (!!).';
+    if (botId === 'king') return 'Sacrificio preciso (!!).';
+    if (botId === 'master') return 'Mossa notevole.';
+    if (botId === 'dummy') return 'Mossa fantastica!!';
+    if (botId === 'alien') return 'Calcolo superiore!';
+    if (botId === 'gothamchess') return 'SACRIFICA TUTTO!! Che mossa!!';
+    return 'Miao?! Interessante...';
   }
   if (quality === 'great') {
-    if (botId === 'knight') return 'Gran mossa!';
+    if (botId === 'knight') return 'Ottima mossa!';
     if (botId === 'bishop') return 'Trovata unica (!)';
-    return 'Esatta (!).';
+    if (botId === 'king') return 'Esatta (!).';
+    if (botId === 'master') return 'Precisa.';
+    if (botId === 'dummy') return 'Ottima trovata!';
+    if (botId === 'alien') return 'Precisione orbitale.';
+    if (botId === 'gothamchess') return 'Trovata unica! Bellissima!';
+    return 'Miao... non male.';
   }
   return null;
 }
@@ -542,18 +643,32 @@ export function getBotMoveComment(
   event: 'capture_queen' | 'check_given' | 'bot_checked' | 'checkmate_win' | 'checkmate_loss'
 ): string | null {
   if (event === 'capture_queen') {
+    if (botId === 'gothamchess') return 'PRESO LA DONNA!';
+    if (botId === 'mittens') return 'Miao... la tua Donna è mia.';
+    if (botId === 'master') return 'La Donna cade.';
     return 'Presa la Donna!';
   }
   if (event === 'check_given') {
+    if (botId === 'mittens') return 'Scacco... miao.';
     return 'Scacco!';
   }
   if (event === 'bot_checked') {
-    return botId === 'knight' ? 'Bel scacco!' : 'Scacco...';
+    if (botId === 'knight') return 'Bel scacco!';
+    if (botId === 'gothamchess') return 'Scacco eh? Vediamo!';
+    return 'Scacco...';
   }
   if (event === 'checkmate_win') {
+    if (botId === 'mittens') return 'Scacco matto. Miao. Ora guarda la revisione!';
+    if (botId === 'gothamchess') return 'SCACCO MATTO! Gg! Apri la revisione qui sopra!';
+    if (botId === 'alien') return 'Scacco matto. Guarda la revisione finale per migliorare.';
+    if (botId === 'master') return 'Scacco matto. Partita conclusa.';
     return 'Scacco matto! Gg.';
   }
   if (event === 'checkmate_loss') {
+    if (botId === 'dummy') return 'Grande matto! Ottimo allenamento, guarda la revisione.';
+    if (botId === 'gothamchess') return 'GG! Mi hai incastrato! Ottima partita!';
+    if (botId === 'mittens') return 'Miao... ben giocato, umano.';
+    if (botId === 'master') return 'Ben giocato. Hai trovato la vittoria.';
     return 'Gg! Ben giocato.';
   }
   return null;
@@ -570,26 +685,67 @@ export function getBotChatReply(
   const chess = new Chess(fen);
   const matBalance = getMaterialBalance(chess, botColor);
 
-  if (/ciao|salve|hey|ehi|buongiorno|buonasera|buona partita|gl|hf/.test(lower)) {
-    return botId === 'knight' ? 'Ciao! Buona partita!' : 'Buona partita!';
+  if (/ciao|salve|hey|ehi|buongiorno|buonasera|buona partita|gl|hf|hello|hi/.test(lower)) {
+    if (botId === 'gothamchess') return 'Ciao! Pronto a sacrificare THE ROOOOK?';
+    if (botId === 'mittens') return 'Miao. Buona fortuna... ne avrai bisogno.';
+    if (botId === 'alien') return 'Saluti! Sviluppa i pezzi leggeri e arrocca presto.';
+    if (botId === 'dummy') return 'Ciao! Sono qui per farti allenare in tranquillità.';
+    if (botId === 'master') return 'Concentrati sulla scacchiera.';
+    if (botId === 'king') return 'Ciao! I miei figli tifano per me oggi!';
+    if (botId === 'bishop') return 'Ciao! Buona partita!';
+    return 'Ciao! Non dimenticare la tua lezione di oggi!';
   }
 
   if (/gg|bella|bravo|brava|forte|grazie|complimenti/.test(lower)) {
-    return botId === 'king' ? 'Gg.' : 'Grazie! Gg!';
+    if (botId === 'gothamchess') return 'GG! A fine partita controlliamo la revisione!';
+    if (botId === 'mittens') return 'Miao.';
+    if (botId === 'master') return 'Gg.';
+    return botId === 'king' ? 'Gg, bella sfida!' : 'Grazie! Gg!';
   }
 
-  if (/patta|pareggio/.test(lower)) {
+  if (/patta|pareggio|draw/.test(lower)) {
     return 'Usa il tasto Patta.';
   }
 
   if (/blunder|errore|noo|ops|cazz|cavolo/.test(lower)) {
+    if (botId === 'gothamchess') return 'Succede anche ai GM! Lo vediamo nella revisione finale!';
     return matBalance > 150 ? 'Capita!' : 'Succede a tutti.';
   }
 
-  const knightShort = ['Vediamo!', 'Tocca a te.', 'Occhio ai cavalli!', 'Bella sfida!'];
-  const bishopShort = ['Mh, interessante.', 'Vediamo il seguito.', 'Buon ritmo.', 'Gioco aperto.'];
-  const kingShort = ['Vedremo.', 'Calcola bene.', 'Mossa interessante.', 'Avanti.'];
+  if (botId === 'dummy') {
+    const dummyTips = [
+      'Prova a controllare le case centrali e4, d4, e5, d5!',
+      'Cerca forchette, inchiodature o pezzi indifesi!',
+      'Ricorda di arroccare per mettere al sicuro il tuo Re.',
+      'Quando finiamo vedrai tutta la revisione delle mosse!',
+    ];
+    return dummyTips[(movesCount + lower.length) % dummyTips.length];
+  }
 
-  const pool = botId === 'knight' ? knightShort : botId === 'bishop' ? bishopShort : kingShort;
+  if (botId === 'alien') {
+    const alienShort = ['Piano interessante.', 'Sonda il lato di Re.', 'Calcola gli scambi.', 'Avanti, terrestre.'];
+    return alienShort[(movesCount + lower.length) % alienShort.length];
+  }
+
+  if (botId === 'gothamchess') {
+    const gothamShort = ['THE ROOOOK!', 'Controlla le minacce!', 'Sviluppa tutti i pezzi!', 'Interessante... vediamo!'];
+    return gothamShort[(movesCount + lower.length) % gothamShort.length];
+  }
+
+  if (botId === 'mittens') {
+    const mittensShort = ['Miao...', 'Ho già calcolato tutto.', 'Bel tentativo.', 'Continua pure, umano.'];
+    return mittensShort[(movesCount + lower.length) % mittensShort.length];
+  }
+
+  if (botId === 'master') {
+    const masterShort = ['Mossa solida.', 'Calcola più a fondo.', 'Ogni debolezza conta.', 'Avanti.'];
+    return masterShort[(movesCount + lower.length) % masterShort.length];
+  }
+
+  const duolingoShort = ['Non perdere la serie!', 'Ottimo allenamento!', 'Tocca a te!', 'Continua così!'];
+  const lunaShort = ['Mh, interessante.', 'Vediamo il seguito.', 'Buon ritmo.', 'Gioco aperto.'];
+  const martinShort = ['Bella mossa!', 'Calcola bene.', 'Mi piace questa posizione.', 'Avanti!'];
+
+  const pool = botId === 'knight' ? duolingoShort : botId === 'bishop' ? lunaShort : martinShort;
   return pool[(movesCount + lower.length) % pool.length];
 }

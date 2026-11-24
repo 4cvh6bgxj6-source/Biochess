@@ -4,7 +4,15 @@ export type ColorPref = 'random' | 'w' | 'b';
 
 export type PieceColor = 'w' | 'b';
 
-export type BotId = 'knight' | 'bishop' | 'king';
+export type BotId =
+  | 'knight'
+  | 'bishop'
+  | 'king'
+  | 'master'
+  | 'dummy'
+  | 'alien'
+  | 'gothamchess'
+  | 'mittens';
 
 export type MoveQuality = 'book' | 'brilliant' | 'great' | 'good' | 'mistake' | 'blunder' | 'neutral';
 
@@ -56,6 +64,8 @@ export interface PlayerSummary {
   draws: number;
   status: 'online' | 'in_game' | 'offline';
   activeGameId?: string | null;
+  lang?: string;
+  country?: string;
 }
 
 export interface ChatMessage {
@@ -93,6 +103,7 @@ export interface GamePlayerInfo {
   elo: number;
   isBot: boolean;
   botId?: BotId;
+  country?: string;
 }
 
 export interface GameState {
@@ -126,8 +137,10 @@ export interface Challenge {
   fromUid?: string;
   from: string;
   fromElo: number;
+  fromCountry?: string;
   toUid?: string;
   to: string;
+  toCountry?: string;
   timeControl: TimeControlId;
   colorPref: ColorPref;
   createdAt: number;
@@ -153,37 +166,117 @@ export interface BotDefinition {
   name: string;
   username: string;
   elo: number;
+  role: 'bot' | 'coach' | 'dummy';
+  hasPostGameReview: boolean;
   tierLabel: string;
-  pieceType: 'n' | 'b' | 'k';
+  pieceType: 'p' | 'n' | 'b' | 'r' | 'q' | 'k';
+  badgeEmoji: string;
+  country?: string;
   styleDescription: string;
 }
 
 export const BOT_DEFINITIONS: Record<BotId, BotDefinition> = {
   knight: {
     id: 'knight',
-    name: 'Bot Cavallo',
-    username: 'Bot_Cavallo',
+    name: 'Duolingo',
+    username: 'Duolingo',
     elo: 350,
+    role: 'bot',
+    hasPostGameReview: false,
     tierLabel: 'Base',
     pieceType: 'n',
-    styleDescription: 'Motore livello base, gioco aperto e qualche imprecisione naturale.',
+    badgeEmoji: '🦉',
+    styleDescription: 'Il gufo da 350 ELO: non perdere la serie, aperture semplici e gioco leggero.',
   },
   bishop: {
     id: 'bishop',
-    name: 'Bot Alfiere',
-    username: 'Bot_Alfiere',
+    name: 'Luna',
+    username: 'Luna',
     elo: 700,
+    role: 'bot',
+    hasPostGameReview: false,
     tierLabel: 'Intermedio',
     pieceType: 'b',
-    styleDescription: 'Motore tattico intermedio, attento ai cambi e al controllo del centro.',
+    badgeEmoji: '🌙',
+    styleDescription: 'Motore tattico da 700 ELO, attento ai cambi e al controllo del centro.',
   },
   king: {
     id: 'king',
-    name: 'Bot Re',
-    username: 'Bot_Re',
+    name: 'Martin',
+    username: 'Martin',
     elo: 1100,
-    tierLabel: 'Maestro',
+    role: 'bot',
+    hasPostGameReview: false,
+    tierLabel: 'Avanzato',
     pieceType: 'k',
-    styleDescription: 'Motore avanzato con ricerca rapida, finali precisi e tattica severa.',
+    badgeEmoji: '🧔',
+    styleDescription: 'Il classico Martin da 1100 ELO: solido, pratico e pronto a punire le sviste.',
+  },
+  master: {
+    id: 'master',
+    name: 'Master',
+    username: 'Master',
+    elo: 2800,
+    role: 'bot',
+    hasPostGameReview: false,
+    tierLabel: 'Gran Maestro',
+    pieceType: 'q',
+    badgeEmoji: '👑',
+    styleDescription: 'Il bot più forte da 2800 ELO: calcolo profondo da Gran Maestro e zero pietà.',
+  },
+  dummy: {
+    id: 'dummy',
+    name: 'Dummy',
+    username: 'Dummy_Training',
+    elo: 150,
+    role: 'dummy',
+    hasPostGameReview: true,
+    tierLabel: 'Allenamento',
+    pieceType: 'p',
+    badgeEmoji: '🎯',
+    styleDescription: 'Allenamento libero: muovi tu anche i pezzi del Dummy per provare tattiche e matti + revisione finale.',
+  },
+  alien: {
+    id: 'alien',
+    name: 'Coach Alien',
+    username: 'Coach_Alien',
+    elo: 1850,
+    role: 'coach',
+    hasPostGameReview: true,
+    tierLabel: 'Coach · Alieno',
+    pieceType: 'q',
+    badgeEmoji: '🛸',
+    styleDescription: 'Coach cosmico posizionale, mette pressione sul centro e analizza ogni errore a fine partita.',
+  },
+  gothamchess: {
+    id: 'gothamchess',
+    name: 'Coach GothamChess',
+    username: 'Coach_GothamChess',
+    elo: 2400,
+    role: 'coach',
+    hasPostGameReview: true,
+    tierLabel: 'Coach · IM',
+    pieceType: 'r',
+    badgeEmoji: '🇺🇸',
+    country: 'US',
+    styleDescription: 'Coach tattico stile IM Levy: sacrifici di Torre, attacchi rapidi e revisione completa.',
+  },
+  mittens: {
+    id: 'mittens',
+    name: 'Coach Mittens',
+    username: 'Coach_Mittens',
+    elo: 3200,
+    role: 'coach',
+    hasPostGameReview: true,
+    tierLabel: 'Coach · Supremo',
+    pieceType: 'k',
+    badgeEmoji: '🐱',
+    styleDescription: 'Il gattino implacabile da 3200 ELO: calcolo profondo e revisione severa a fine partita.',
   },
 };
+
+export function isTrainingBot(botId?: BotId | string | null): boolean {
+  if (!botId) return false;
+  const def = BOT_DEFINITIONS[botId as BotId];
+  return Boolean(def?.hasPostGameReview);
+}
