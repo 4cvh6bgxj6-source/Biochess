@@ -84,6 +84,28 @@
       "losses": 0,
       "draws": 0,
       "lastSeenAt": 1795542941155
+    },
+    "alicepvp": {
+      "username": "AlicePvP",
+      "key": "alicepvp",
+      "passwordHash": "a036c9faaf5056cc5a7bf19b155b8593:aee57bb9ca770368efdb0725e1582c77f224c80300ec7a08f4b2a26765ef45649adb7cca3f38f7dc261903eaab9d585e904ad74cb49430641659436656741fcd",
+      "token": "eyJrIjoiYWxpY2VwdnAiLCJ1IjoiQWxpY2VQdlAiLCJlIjozMDAsInciOjAsImwiOjAsImQiOjAsImV4cCI6MTc5NjE1NjE0NTIyMX0.tMBLRsa0WMI8pRm8qeAzZIbJpOd4mELUKvY4od4JQds",
+      "elo": 300,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "lastSeenAt": 1795551345221
+    },
+    "bobpvp": {
+      "username": "BobPvP",
+      "key": "bobpvp",
+      "passwordHash": "4aa183431b248117e7379d4b2953ea0a:cdd49de633a81862e753c81f8b4df196f63f4209da6caa93b21c33d7f572e4de7b09e8119665263c18b5ad3dfcb4da0658ad81e3993e165dc0db0c1761dd5492",
+      "token": "eyJrIjoiYm9icHZwIiwidSI6IkJvYlB2UCIsImUiOjMwMCwidyI6MCwibCI6MCwiZCI6MCwiZXhwIjoxNzk2MTU2MTUwOTA0fQ.dp1YRcANhsop1kpxToNVJ3ToY0UwoqNNdS15uAeAroA",
+      "elo": 300,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "lastSeenAt": 1795551350904
     }
   },
   "recentMatches": [
@@ -123,5 +145,19 @@
       "finishedAt": 1795531451481,
       "isBotGame": false
     }
-  ]
+  ],
+  "games": {},
+  "challenges": {
+    "chal_56a901029326": {
+      "id": "chal_56a901029326",
+      "from": "AlicePvP",
+      "fromElo": 300,
+      "to": "BobPvP",
+      "timeControl": "blitz_5_0",
+      "colorPref": "w",
+      "createdAt": 1795551363048,
+      "expiresAt": 1795551453048,
+      "targetOnline": true
+    }
+  }
 }

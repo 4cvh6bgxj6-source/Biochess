@@ -1,0 +1,674 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 4.1: Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Helpers (Phase 3)
+    // -------------------------------------------------------------------------
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEntityId(id) {
+      return id is string && id.size() >= 4 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUsername(name) {
+      return name is string && name.size() >= 2 && name.size() <= 20 && name.matches('^[a-zA-Z0-9_]{2,20}$');
+    }
+
+    function isValidUsernameKey(key) {
+      return key is string && key.size() >= 2 && key.size() <= 20 && key.matches('^[a-z0-9_]{2,20}$');
+    }
+
+    function isValidTimeControl(tc) {
+      return tc in ['blitz_3_2', 'blitz_5_0', 'rapid_10_0', 'unlimited'];
+    }
+
+    function isValidColorPref(cp) {
+      return cp in ['random', 'w', 'b'];
+    }
+
+    function isValidGameStatus(st) {
+      return st in ['active', 'checkmate', 'stalemate', 'draw', 'resigned', 'timeout'];
+    }
+
+    function isValidMoveQuality(q) {
+      return q in ['book', 'brilliant', 'great', 'good', 'mistake', 'blunder', 'neutral'];
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprints (Pillar 2: Strict Keys, Types, Boundaries, Identity)
+    // -------------------------------------------------------------------------
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'username', 'key', 'elo', 'wins', 'losses', 'draws',
+          'online', 'activeGameId', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'username', 'key', 'elo', 'wins', 'losses', 'draws',
+          'online', 'activeGameId', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        isValidUsername(data.username) &&
+        isValidUsernameKey(data.key) &&
+        data.username.lower() == data.key &&
+        data.elo is int && data.elo >= 0 && data.elo <= 10000 &&
+        data.wins is int && data.wins >= 0 && data.wins <= 1000000 &&
+        data.losses is int && data.losses >= 0 && data.losses <= 1000000 &&
+        data.draws is int && data.draws >= 0 && data.draws <= 1000000 &&
+        data.online is bool &&
+        data.activeGameId is string && data.activeGameId.size() <= 128 &&
+        (data.activeGameId == '' || isValidEntityId(data.activeGameId)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUsernameClaim(data) {
+      return data.keys().hasAll(['uid', 'username', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'username', 'createdAt']) &&
+        isValidId(data.uid) &&
+        isValidUsername(data.username) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidChallenge(data) {
+      return data.keys().hasAll([
+          'id', 'fromUid', 'fromUsername', 'fromElo', 'toUid', 'toUsername',
+          'timeControl', 'colorPref', 'status', 'gameId', 'expiresAtMs',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'fromUid', 'fromUsername', 'fromElo', 'toUid', 'toUsername',
+          'timeControl', 'colorPref', 'status', 'gameId', 'expiresAtMs',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidEntityId(data.id) &&
+        isValidId(data.fromUid) &&
+        data.fromUsername is string && data.fromUsername.size() >= 2 && data.fromUsername.size() <= 20 &&
+        data.fromElo is int && data.fromElo >= 0 && data.fromElo <= 10000 &&
+        isValidId(data.toUid) &&
+        data.toUsername is string && data.toUsername.size() >= 2 && data.toUsername.size() <= 20 &&
+        data.fromUid != data.toUid &&
+        isValidTimeControl(data.timeControl) &&
+        isValidColorPref(data.colorPref) &&
+        data.status in ['pending', 'accepted', 'declined', 'cancelled'] &&
+        data.gameId is string && data.gameId.size() <= 128 &&
+        (data.gameId == '' || isValidEntityId(data.gameId)) &&
+        data.expiresAtMs is int && data.expiresAtMs > 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidParticipantList(list) {
+      return list is list &&
+        list.size() >= 1 &&
+        list.size() <= 2 &&
+        isValidId(list[0]) &&
+        (list.size() == 1 || (isValidId(list[1]) && list[1] != list[0]));
+    }
+
+    function isValidGame(data) {
+      return data.keys().hasAll([
+          'id', 'whiteUid', 'whiteUsername', 'whiteElo', 'whiteIsBot',
+          'blackUid', 'blackUsername', 'blackElo', 'blackIsBot',
+          'participantUids', 'fen', 'pgn', 'turn', 'movesCount',
+          'status', 'winner', 'endReason', 'timeControl',
+          'whiteTimeMs', 'blackTimeMs', 'drawOfferBy',
+          'rematchRequestedBy', 'rematchGameId',
+          'whiteEloApplied', 'blackEloApplied',
+          'isBotGame', 'botId', 'lastMoveAt', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'whiteUid', 'whiteUsername', 'whiteElo', 'whiteIsBot',
+          'blackUid', 'blackUsername', 'blackElo', 'blackIsBot',
+          'participantUids', 'fen', 'pgn', 'turn', 'movesCount',
+          'status', 'winner', 'endReason', 'timeControl',
+          'whiteTimeMs', 'blackTimeMs', 'drawOfferBy',
+          'rematchRequestedBy', 'rematchGameId',
+          'whiteEloApplied', 'blackEloApplied',
+          'isBotGame', 'botId', 'lastMoveAt', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidEntityId(data.id) &&
+        isValidId(data.whiteUid) &&
+        data.whiteUsername is string && data.whiteUsername.size() >= 2 && data.whiteUsername.size() <= 32 &&
+        data.whiteElo is int && data.whiteElo >= 0 && data.whiteElo <= 10000 &&
+        data.whiteIsBot is bool &&
+        isValidId(data.blackUid) &&
+        data.blackUsername is string && data.blackUsername.size() >= 2 && data.blackUsername.size() <= 32 &&
+        data.blackElo is int && data.blackElo >= 0 && data.blackElo <= 10000 &&
+        data.blackIsBot is bool &&
+        isValidParticipantList(data.participantUids) &&
+        data.fen is string && data.fen.size() >= 10 && data.fen.size() <= 200 &&
+        data.pgn is string && data.pgn.size() <= 8000 &&
+        data.turn in ['w', 'b'] &&
+        data.movesCount is int && data.movesCount >= 0 && data.movesCount <= 2000 &&
+        isValidGameStatus(data.status) &&
+        data.winner in ['', 'w', 'b', 'draw'] &&
+        data.endReason is string && data.endReason.size() <= 200 &&
+        isValidTimeControl(data.timeControl) &&
+        data.whiteTimeMs is int && data.whiteTimeMs >= 0 && data.whiteTimeMs <= 86400000 &&
+        data.blackTimeMs is int && data.blackTimeMs >= 0 && data.blackTimeMs <= 86400000 &&
+        data.drawOfferBy in ['', 'w', 'b'] &&
+        data.rematchRequestedBy in ['', 'w', 'b'] &&
+        data.rematchGameId is string && data.rematchGameId.size() <= 128 &&
+        (data.rematchGameId == '' || isValidEntityId(data.rematchGameId)) &&
+        data.whiteEloApplied is bool &&
+        data.blackEloApplied is bool &&
+        data.isBotGame is bool &&
+        data.botId in ['', 'knight', 'bishop', 'king'] &&
+        data.lastMoveAt is timestamp &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMove(data) {
+      return data.keys().hasAll([
+          'ply', 'san', 'from', 'to', 'fen', 'color', 'captured',
+          'promotion', 'quality', 'cpLoss', 'authorUid', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ply', 'san', 'from', 'to', 'fen', 'color', 'captured',
+          'promotion', 'quality', 'cpLoss', 'authorUid', 'createdAt'
+        ]) &&
+        data.ply is int && data.ply >= 1 && data.ply <= 2000 &&
+        data.san is string && data.san.size() >= 1 && data.san.size() <= 16 &&
+        data.from is string && data.from.size() == 2 &&
+        data.to is string && data.to.size() == 2 &&
+        data.fen is string && data.fen.size() >= 10 && data.fen.size() <= 200 &&
+        data.color in ['w', 'b'] &&
+        data.captured is string && data.captured.size() <= 2 &&
+        data.promotion is string && data.promotion.size() <= 2 &&
+        isValidMoveQuality(data.quality) &&
+        data.cpLoss is int && data.cpLoss >= 0 && data.cpLoss <= 200000 &&
+        isValidId(data.authorUid) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'sender', 'authorUid', 'text', 'kind', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'sender', 'authorUid', 'text', 'kind', 'createdAt']) &&
+        isValidId(data.id) && data.id.size() >= 2 &&
+        data.sender is string && data.sender.size() >= 1 && data.sender.size() <= 32 &&
+        isValidId(data.authorUid) &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 400 &&
+        data.kind in ['player', 'bot', 'system'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidRecentMatch(data) {
+      return data.keys().hasAll([
+          'id', 'white', 'black', 'winner', 'status', 'endReason',
+          'movesCount', 'timeControl', 'isBotGame', 'authorUid', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'white', 'black', 'winner', 'status', 'endReason',
+          'movesCount', 'timeControl', 'isBotGame', 'authorUid', 'createdAt'
+        ]) &&
+        isValidEntityId(data.id) &&
+        data.white is string && data.white.size() >= 2 && data.white.size() <= 32 &&
+        data.black is string && data.black.size() >= 2 && data.black.size() <= 32 &&
+        data.winner in ['w', 'b', 'draw'] &&
+        data.status in ['checkmate', 'stalemate', 'draw', 'resigned', 'timeout'] &&
+        data.endReason is string && data.endReason.size() <= 200 &&
+        data.movesCount is int && data.movesCount >= 0 && data.movesCount <= 2000 &&
+        isValidTimeControl(data.timeControl) &&
+        data.isBotGame is bool &&
+        isValidId(data.authorUid) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidEloSettlement(inc, ext) {
+      return (
+        // Win: +50 ELO, +1 win
+        (
+          inc.wins == ext.wins + 1 &&
+          inc.losses == ext.losses &&
+          inc.draws == ext.draws &&
+          inc.elo == ext.elo + 50
+        ) ||
+        // Loss: -76 ELO (floor 0), +1 loss
+        (
+          inc.losses == ext.losses + 1 &&
+          inc.wins == ext.wins &&
+          inc.draws == ext.draws &&
+          (inc.elo == ext.elo - 76 || (ext.elo < 76 && inc.elo == 0))
+        ) ||
+        // Draw: +0 ELO, +1 draw
+        (
+          inc.draws == ext.draws + 1 &&
+          inc.wins == ext.wins &&
+          inc.losses == ext.losses &&
+          inc.elo == ext.elo
+        )
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // /users/{uid} - Public Chess Profiles (Zero PII)
+    // -------------------------------------------------------------------------
+    match /users/{uid} {
+      allow get: if isVerified() && isValidId(uid);
+      allow list: if isVerified() && (resource.data.online == true || resource.data.elo >= 0);
+
+      allow create: if isVerified() &&
+        isValidId(uid) &&
+        uid == request.auth.uid &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == uid &&
+        incoming().elo == 300 &&
+        incoming().wins == 0 &&
+        incoming().losses == 0 &&
+        incoming().draws == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/usernames/$(incoming().key)) &&
+        getAfter(/databases/$(database)/documents/usernames/$(incoming().key)).data.uid == uid;
+
+      allow update: if isVerified() &&
+        isValidId(uid) &&
+        uid == request.auth.uid &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().username == existing().username &&
+        incoming().key == existing().key &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Action: Update online presence or active game pointer
+          incoming().diff(existing()).affectedKeys().hasOnly(['online', 'activeGameId', 'updatedAt']) ||
+          // Action: Settle completed match ELO (+50 win / -76 loss / 0 draw)
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'wins', 'losses', 'draws', 'activeGameId', 'updatedAt']) &&
+            isValidEloSettlement(incoming(), existing())
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // /usernames/{usernameKey} - Immutable Unique Username Reservation
+    // -------------------------------------------------------------------------
+    match /usernames/{usernameKey} {
+      allow get: if isVerified() && isValidUsernameKey(usernameKey);
+      allow list: if false;
+
+      allow create: if isVerified() &&
+        isValidUsernameKey(usernameKey) &&
+        isValidUsernameClaim(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().username.lower() == usernameKey &&
+        incoming().createdAt == request.time &&
+        existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.key == usernameKey;
+
+      allow update, delete: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // /challenges/{challengeId} - Direct PvP Challenges
+    // -------------------------------------------------------------------------
+    match /challenges/{challengeId} {
+      allow get: if isVerified() &&
+        isValidEntityId(challengeId) &&
+        (existing().fromUid == request.auth.uid || existing().toUid == request.auth.uid);
+
+      allow list: if isVerified() &&
+        (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+
+      allow create: if isVerified() &&
+        isValidEntityId(challengeId) &&
+        isValidChallenge(incoming()) &&
+        incoming().id == challengeId &&
+        incoming().fromUid == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().gameId == '' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(incoming().fromUid)) &&
+        exists(/databases/$(database)/documents/users/$(incoming().toUid));
+
+      allow update: if isVerified() &&
+        isValidEntityId(challengeId) &&
+        isValidChallenge(incoming()) &&
+        existing().status == 'pending' &&
+        incoming().id == existing().id &&
+        incoming().fromUid == existing().fromUid &&
+        incoming().fromUsername == existing().fromUsername &&
+        incoming().fromElo == existing().fromElo &&
+        incoming().toUid == existing().toUid &&
+        incoming().toUsername == existing().toUsername &&
+        incoming().timeControl == existing().timeControl &&
+        incoming().colorPref == existing().colorPref &&
+        incoming().expiresAtMs == existing().expiresAtMs &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Action: Challenger cancels pending challenge
+          (
+            request.auth.uid == existing().fromUid &&
+            incoming().status == 'cancelled' &&
+            incoming().gameId == '' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          // Action: Target declines pending challenge
+          (
+            request.auth.uid == existing().toUid &&
+            incoming().status == 'declined' &&
+            incoming().gameId == '' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          // Action: Target accepts challenge (atomic game creation bound to both players)
+          (
+            request.auth.uid == existing().toUid &&
+            incoming().status == 'accepted' &&
+            isValidEntityId(incoming().gameId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'gameId', 'updatedAt']) &&
+            existsAfter(/databases/$(database)/documents/games/$(incoming().gameId)) &&
+            getAfter(/databases/$(database)/documents/games/$(incoming().gameId)).data.participantUids.hasAll([existing().fromUid, existing().toUid])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // /games/{gameId} - Active and Finished Chess Matches
+    // -------------------------------------------------------------------------
+    match /games/{gameId} {
+      allow get: if isVerified() &&
+        isValidEntityId(gameId) &&
+        (existing().whiteUid == request.auth.uid || existing().blackUid == request.auth.uid);
+
+      allow list: if isVerified() &&
+        (request.auth.uid in resource.data.participantUids);
+
+      allow create: if isVerified() &&
+        isValidEntityId(gameId) &&
+        isValidGame(incoming()) &&
+        incoming().id == gameId &&
+        (incoming().whiteUid == request.auth.uid || incoming().blackUid == request.auth.uid) &&
+        (request.auth.uid in incoming().participantUids) &&
+        incoming().status == 'active' &&
+        incoming().winner == '' &&
+        incoming().movesCount == 0 &&
+        incoming().drawOfferBy == '' &&
+        incoming().rematchRequestedBy == '' &&
+        incoming().rematchGameId == '' &&
+        incoming().whiteEloApplied == false &&
+        incoming().blackEloApplied == false &&
+        incoming().lastMoveAt == request.time &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            !incoming().isBotGame &&
+            !incoming().whiteIsBot &&
+            !incoming().blackIsBot &&
+            incoming().botId == '' &&
+            incoming().whiteUid != incoming().blackUid &&
+            incoming().participantUids.size() == 2 &&
+            (incoming().whiteUid in incoming().participantUids) &&
+            (incoming().blackUid in incoming().participantUids) &&
+            exists(/databases/$(database)/documents/users/$(incoming().whiteUid)) &&
+            exists(/databases/$(database)/documents/users/$(incoming().blackUid))
+          ) ||
+          (
+            incoming().isBotGame &&
+            incoming().botId in ['knight', 'bishop', 'king'] &&
+            incoming().participantUids.size() == 1 &&
+            (
+              (incoming().whiteIsBot && incoming().whiteUid == 'bot' && !incoming().blackIsBot && incoming().blackUid == request.auth.uid) ||
+              (incoming().blackIsBot && incoming().blackUid == 'bot' && !incoming().whiteIsBot && incoming().whiteUid == request.auth.uid)
+            )
+          )
+        );
+
+      allow update: if isVerified() &&
+        isValidEntityId(gameId) &&
+        isValidGame(incoming()) &&
+        (existing().whiteUid == request.auth.uid || existing().blackUid == request.auth.uid) &&
+        incoming().id == existing().id &&
+        incoming().whiteUid == existing().whiteUid &&
+        incoming().whiteUsername == existing().whiteUsername &&
+        incoming().whiteElo == existing().whiteElo &&
+        incoming().whiteIsBot == existing().whiteIsBot &&
+        incoming().blackUid == existing().blackUid &&
+        incoming().blackUsername == existing().blackUsername &&
+        incoming().blackElo == existing().blackElo &&
+        incoming().blackIsBot == existing().blackIsBot &&
+        incoming().participantUids == existing().participantUids &&
+        incoming().timeControl == existing().timeControl &&
+        incoming().isBotGame == existing().isBotGame &&
+        incoming().botId == existing().botId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          // Active match actions (locked permanently once status != 'active')
+          (
+            existing().status == 'active' &&
+            (
+              // Action: Play Move (PvP turn-enforced + atomic move doc & recentMatches if terminal)
+              (
+                incoming().movesCount == existing().movesCount + 1 &&
+                incoming().lastMoveAt == request.time &&
+                incoming().drawOfferBy == '' &&
+                incoming().status in ['active', 'checkmate', 'stalemate', 'draw'] &&
+                (
+                  existing().isBotGame ||
+                  (existing().turn == 'w' && request.auth.uid == existing().whiteUid && incoming().turn == 'b') ||
+                  (existing().turn == 'b' && request.auth.uid == existing().blackUid && incoming().turn == 'w')
+                ) &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'fen', 'pgn', 'turn', 'movesCount', 'status', 'winner',
+                  'endReason', 'whiteTimeMs', 'blackTimeMs', 'drawOfferBy',
+                  'lastMoveAt', 'updatedAt'
+                ]) &&
+                existsAfter(/databases/$(database)/documents/games/$(gameId)/moves/$(string(incoming().movesCount))) &&
+                (
+                  incoming().status == 'active' ||
+                  existsAfter(/databases/$(database)/documents/recentMatches/$(gameId))
+                )
+              ) ||
+              // Action: Offer Draw
+              (
+                incoming().status == 'active' &&
+                existing().drawOfferBy == '' &&
+                (
+                  (request.auth.uid == existing().whiteUid && incoming().drawOfferBy == 'w') ||
+                  (request.auth.uid == existing().blackUid && incoming().drawOfferBy == 'b')
+                ) &&
+                incoming().lastMoveAt == existing().lastMoveAt &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['drawOfferBy', 'updatedAt'])
+              ) ||
+              // Action: Decline Draw
+              (
+                incoming().status == 'active' &&
+                existing().drawOfferBy != '' &&
+                incoming().drawOfferBy == '' &&
+                (
+                  existing().isBotGame ||
+                  (existing().drawOfferBy == 'w' && request.auth.uid == existing().blackUid) ||
+                  (existing().drawOfferBy == 'b' && request.auth.uid == existing().whiteUid)
+                ) &&
+                incoming().lastMoveAt == existing().lastMoveAt &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['drawOfferBy', 'updatedAt'])
+              ) ||
+              // Action: Accept Draw
+              (
+                existing().drawOfferBy != '' &&
+                incoming().status == 'draw' &&
+                incoming().winner == 'draw' &&
+                incoming().drawOfferBy == '' &&
+                (
+                  existing().isBotGame ||
+                  (existing().drawOfferBy == 'w' && request.auth.uid == existing().blackUid) ||
+                  (existing().drawOfferBy == 'b' && request.auth.uid == existing().whiteUid)
+                ) &&
+                incoming().lastMoveAt == existing().lastMoveAt &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'winner', 'endReason', 'drawOfferBy', 'updatedAt'
+                ]) &&
+                existsAfter(/databases/$(database)/documents/recentMatches/$(gameId))
+              ) ||
+              // Action: Resign (loser sets opponent as winner)
+              (
+                incoming().status == 'resigned' &&
+                (
+                  (request.auth.uid == existing().whiteUid && incoming().winner == 'b') ||
+                  (request.auth.uid == existing().blackUid && incoming().winner == 'w')
+                ) &&
+                incoming().lastMoveAt == existing().lastMoveAt &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'winner', 'endReason', 'drawOfferBy', 'updatedAt'
+                ]) &&
+                existsAfter(/databases/$(database)/documents/recentMatches/$(gameId))
+              ) ||
+              // Action: Claim Timeout
+              (
+                existing().timeControl != 'unlimited' &&
+                existing().movesCount >= 1 &&
+                incoming().status == 'timeout' &&
+                (
+                  (existing().turn == 'w' && incoming().winner == 'b' && incoming().whiteTimeMs == 0) ||
+                  (existing().turn == 'b' && incoming().winner == 'w' && incoming().blackTimeMs == 0)
+                ) &&
+                incoming().lastMoveAt == existing().lastMoveAt &&
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'status', 'winner', 'endReason', 'whiteTimeMs', 'blackTimeMs',
+                  'drawOfferBy', 'updatedAt'
+                ]) &&
+                existsAfter(/databases/$(database)/documents/recentMatches/$(gameId))
+              )
+            )
+          ) ||
+          // Terminal match actions ONLY: individual ELO settlement & rematch linking
+          (
+            existing().status != 'active' &&
+            incoming().lastMoveAt == existing().lastMoveAt &&
+            (
+              // Action: White claims own ELO result
+              (
+                request.auth.uid == existing().whiteUid &&
+                existing().whiteEloApplied == false &&
+                incoming().whiteEloApplied == true &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['whiteEloApplied', 'updatedAt'])
+              ) ||
+              // Action: Black claims own ELO result
+              (
+                request.auth.uid == existing().blackUid &&
+                existing().blackEloApplied == false &&
+                incoming().blackEloApplied == true &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['blackEloApplied', 'updatedAt'])
+              ) ||
+              // Action: Request rematch
+              (
+                existing().rematchRequestedBy == '' &&
+                (
+                  (request.auth.uid == existing().whiteUid && incoming().rematchRequestedBy == 'w') ||
+                  (request.auth.uid == existing().blackUid && incoming().rematchRequestedBy == 'b')
+                ) &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['rematchRequestedBy', 'updatedAt'])
+              ) ||
+              // Action: Accept / Start rematch (atomic new game creation bound to same players)
+              (
+                existing().rematchGameId == '' &&
+                (existing().rematchRequestedBy != '' || existing().isBotGame == true) &&
+                isValidEntityId(incoming().rematchGameId) &&
+                incoming().diff(existing()).affectedKeys().hasOnly(['rematchRequestedBy', 'rematchGameId', 'updatedAt']) &&
+                existsAfter(/databases/$(database)/documents/games/$(incoming().rematchGameId)) &&
+                getAfter(/databases/$(database)/documents/games/$(incoming().rematchGameId)).data.participantUids.hasAll(existing().participantUids)
+              )
+            )
+          )
+        );
+
+      allow delete: if false;
+
+      // -----------------------------------------------------------------------
+      // /games/{gameId}/moves/{moveId} - Master Gate + Atomicity Guarantee
+      // -----------------------------------------------------------------------
+      match /moves/{moveId} {
+        allow get, list: if isVerified() &&
+          isValidEntityId(gameId) &&
+          (request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.participantUids);
+
+        allow create: if isVerified() &&
+          isValidEntityId(gameId) &&
+          isValidId(moveId) &&
+          isValidMove(incoming()) &&
+          incoming().authorUid == request.auth.uid &&
+          moveId == string(incoming().ply) &&
+          incoming().createdAt == request.time &&
+          get(/databases/$(database)/documents/games/$(gameId)).data.status == 'active' &&
+          (request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.participantUids) &&
+          getAfter(/databases/$(database)/documents/games/$(gameId)).data.movesCount == incoming().ply;
+
+        allow update, delete: if false;
+      }
+
+      // -----------------------------------------------------------------------
+      // /games/{gameId}/messages/{messageId} - Master Gate
+      // -----------------------------------------------------------------------
+      match /messages/{messageId} {
+        allow get, list: if isVerified() &&
+          isValidEntityId(gameId) &&
+          (request.auth.uid in get(/databases/$(database)/documents/games/$(gameId)).data.participantUids);
+
+        allow create: if isVerified() &&
+          isValidEntityId(gameId) &&
+          isValidId(messageId) &&
+          isValidMessage(incoming()) &&
+          incoming().id == messageId &&
+          incoming().authorUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          existsAfter(/databases/$(database)/documents/games/$(gameId)) &&
+          (request.auth.uid in getAfter(/databases/$(database)/documents/games/$(gameId)).data.participantUids);
+
+        allow update, delete: if false;
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // /recentMatches/{matchId} - Public Finished Match Summary
+    // -------------------------------------------------------------------------
+    match /recentMatches/{matchId} {
+      allow get: if isVerified() && isValidEntityId(matchId);
+      allow list: if isVerified() && resource.data.createdAt > timestamp.date(1970, 1, 1);
+
+      allow create: if isVerified() &&
+        isValidEntityId(matchId) &&
+        isValidRecentMatch(incoming()) &&
+        incoming().id == matchId &&
+        incoming().authorUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        existsAfter(/databases/$(database)/documents/games/$(matchId)) &&
+        (request.auth.uid in getAfter(/databases/$(database)/documents/games/$(matchId)).data.participantUids) &&
+        getAfter(/databases/$(database)/documents/games/$(matchId)).data.status != 'active';
+
+      allow update, delete: if false;
+    }
+  }
+}

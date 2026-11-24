@@ -48,6 +48,7 @@ export const TIME_CONTROLS: Record<TimeControlId, TimeControlConfig> = {
 };
 
 export interface PlayerSummary {
+  uid?: string;
   username: string;
   elo: number;
   wins: number;
@@ -87,6 +88,7 @@ export type GameStatus =
   | 'timeout';
 
 export interface GamePlayerInfo {
+  uid?: string;
   username: string;
   elo: number;
   isBot: boolean;
@@ -111,6 +113,9 @@ export interface GameState {
   createdAt: number;
   drawOfferBy: PieceColor | null;
   rematchRequestedBy: PieceColor | null;
+  rematchGameId?: string;
+  whiteEloApplied?: boolean;
+  blackEloApplied?: boolean;
   chat: ChatMessage[];
   isBotGame: boolean;
   botId?: BotId;
@@ -118,8 +123,10 @@ export interface GameState {
 
 export interface Challenge {
   id: string;
+  fromUid?: string;
   from: string;
   fromElo: number;
+  toUid?: string;
   to: string;
   timeControl: TimeControlId;
   colorPref: ColorPref;
@@ -180,63 +187,3 @@ export const BOT_DEFINITIONS: Record<BotId, BotDefinition> = {
     styleDescription: 'Motore avanzato con ricerca rapida, finali precisi e tattica severa.',
   },
 };
-
-export type ClientEvent =
-  | { type: 'auth:login'; username: string; password: string }
-  | { type: 'auth:register'; username: string; password: string }
-  | { type: 'auth:resume'; username: string; token: string }
-  | { type: 'auth:logout' }
-  | { type: 'lobby:refresh' }
-  | {
-      type: 'challenge:send';
-      toUsername: string;
-      timeControl: TimeControlId;
-      colorPref: ColorPref;
-    }
-  | { type: 'challenge:cancel'; challengeId: string }
-  | { type: 'challenge:respond'; challengeId: string; accept: boolean }
-  | {
-      type: 'bot:start';
-      botId: BotId;
-      timeControl: TimeControlId;
-      colorPref: ColorPref;
-    }
-  | {
-      type: 'game:move';
-      gameId: string;
-      from: string;
-      to: string;
-      promotion?: 'q' | 'r' | 'b' | 'n';
-    }
-  | { type: 'game:chat'; gameId: string; text: string }
-  | { type: 'game:resign'; gameId: string }
-  | { type: 'game:offer_draw'; gameId: string }
-  | { type: 'game:respond_draw'; gameId: string; accept: boolean }
-  | { type: 'game:rematch'; gameId: string }
-  | { type: 'game:leave_view' };
-
-export type ServerEvent =
-  | {
-      type: 'auth:ok';
-      profile: PlayerSummary;
-      token: string;
-      activeGame: GameState | null;
-    }
-  | { type: 'auth:error'; message: string }
-  | {
-      type: 'lobby:state';
-      onlinePlayers: PlayerSummary[];
-      leaderboard: PlayerSummary[];
-      recentMatches: RecentMatchSummary[];
-      incomingChallenges: Challenge[];
-      outgoingChallenges: Challenge[];
-    }
-  | { type: 'challenge:sent'; challenge: Challenge }
-  | { type: 'challenge:received'; challenge: Challenge }
-  | { type: 'challenge:removed'; challengeId: string; reason?: string }
-  | { type: 'challenge:error'; message: string }
-  | { type: 'game:started'; game: GameState }
-  | { type: 'game:updated'; game: GameState }
-  | { type: 'game:chat_message'; gameId: string; message: ChatMessage }
-  | { type: 'game:error'; message: string }
-  | { type: 'clock:sync'; gameId: string; whiteTimeMs: number; blackTimeMs: number };

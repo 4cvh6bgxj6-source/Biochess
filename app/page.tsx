@@ -1,5 +1,10 @@
 import { ChessApp } from '@/components/ChessApp';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 export default function HomePage() {
-  return <ChessApp />;
+  return (
+    <ErrorBoundary>
+      <ChessApp />
+    </ErrorBoundary>
+  );
 }

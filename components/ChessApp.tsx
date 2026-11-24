@@ -1,467 +1,426 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import { AnimatePresence, motion } from 'motion/react';
-import { Chess } from 'chess.js';
+import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import { Bot, LogOut, Swords, Trophy } from 'lucide-react';
 import type {
   BotId,
   Challenge,
-  ClientEvent,
+  ChatMessage,
   ColorPref,
+  GameMove,
   GameState,
+  PieceColor,
   PlayerSummary,
   RecentMatchSummary,
-  ServerEvent,
   TimeControlId,
 } from '@/lib/types';
 import { BIOCHESS_LOGO } from '@/lib/brand';
 import { soundFX } from '@/lib/sound';
+import { auth, googleProvider } from '@/lib/firebase';
+import {
+  assembleGameState,
+  cancelPendingChallenge,
+  claimTimeoutInFirestore,
+  createBotGameInFirestore,
+  offerDrawInFirestore,
+  registerBioChessUsername,
+  requestOrAcceptRematchInFirestore,
+  resignGameInFirestore,
+  respondDrawInFirestore,
+  respondToChallenge,
+  runBotTurnInFirestore,
+  sendChallengeToUser,
+  sendPlayerChatAndMaybeBotReply,
+  setPresence,
+  settleMyEloForGame,
+  subscribeChallenges,
+  subscribeGameRoom,
+  subscribeLeaderboard,
+  subscribeMyGames,
+  subscribeMyProfile,
+  subscribeOnlinePlayers,
+  subscribeRecentMatches,
+  submitMoveToFirestore,
+  type GameDocSnapshot,
+} from '@/lib/firestore-chess';
 import { UsernameGateModal } from './UsernameGateModal';
 import { LobbyView, type LobbyTab } from './LobbyView';
 import { GameWorkspace } from './GameWorkspace';
 import { IncomingChallengeToast } from './IncomingChallengeToast';
 
 export function ChessApp() {
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const activeGameIdRef = useRef<string | null>(null);
-  const myUsernameRef = useRef<string | null>(null);
-  const sessionTokenRef = useRef<string | null>(null);
-  const transportModeRef = useRef<'ws' | 'http'>('ws');
-  const rpcInFlightCountRef = useRef(0);
-  const poll401CountRef = useRef(0);
+  const [authReady, setAuthReady] = useState(false);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [loadedProfileUid, setLoadedProfileUid] = useState<string | null>(null);
+  const [profile, setProfile] = useState<PlayerSummary | null>(null);
 
-  const [wsReady, setWsReady] = useState(false);
-  const [transportMode, setTransportMode] = useState<'ws' | 'http'>('ws');
   const [connecting, setConnecting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [challengeError, setChallengeError] = useState<string | null>(null);
   const [gameError, setGameError] = useState<string | null>(null);
+  const [runtimeFatalError, setRuntimeFatalError] = useState<Error | null>(null);
 
-  const [profile, setProfile] = useState<PlayerSummary | null>(null);
   const [onlinePlayers, setOnlinePlayers] = useState<PlayerSummary[]>([]);
   const [leaderboard, setLeaderboard] = useState<PlayerSummary[]>([]);
   const [recentMatches, setRecentMatches] = useState<RecentMatchSummary[]>([]);
   const [incomingChallenges, setIncomingChallenges] = useState<Challenge[]>([]);
   const [outgoingChallenges, setOutgoingChallenges] = useState<Challenge[]>([]);
 
-  const [activeGame, setActiveGame] = useState<GameState | null>(null);
+  const [activeGameId, setActiveGameId] = useState<string | null>(null);
+  const [activeGameDoc, setActiveGameDoc] = useState<GameDocSnapshot | null>(null);
+  const [activeMoves, setActiveMoves] = useState<GameMove[]>([]);
+  const [activeMessages, setActiveMessages] = useState<ChatMessage[]>([]);
+
   const [viewMode, setViewMode] = useState<'lobby' | 'game'>('lobby');
   const [lobbyTab, setLobbyTab] = useState<LobbyTab>('challenge');
-  const [whiteTimeMs, setWhiteTimeMs] = useState(0);
-  const [blackTimeMs, setBlackTimeMs] = useState(0);
+  const [liveClock, setLiveClock] = useState<{ gameId: string; w: number; b: number } | null>(null);
   const [muted, setMuted] = useState(false);
   const [inviteTarget, setInviteTarget] = useState('');
 
-  useEffect(() => {
-    activeGameIdRef.current = activeGame?.id || null;
-  }, [activeGame?.id]);
+  const settlingGameIdsRef = useRef<Set<string>>(new Set());
+  const botTurnKeyRef = useRef<string>('');
+  const humanMoveMetaRef = useRef<{
+    gameId: string;
+    ply: number;
+    quality: GameMove['quality'];
+    captured?: string;
+    inCheck: boolean;
+  } | null>(null);
+  const timeoutClaimedIdRef = useRef<string | null>(null);
+  const prevMovesCountRef = useRef<Record<string, number>>({});
+  const prevGameStatusRef = useRef<Record<string, string>>({});
+  const prevChatCountRef = useRef<Record<string, number>>({});
+  const prevIncomingChallengeIdsRef = useRef<Set<string>>(new Set());
 
-  useEffect(() => {
-    myUsernameRef.current = profile?.username || null;
-  }, [profile?.username]);
+  if (runtimeFatalError) {
+    throw runtimeFatalError;
+  }
 
-  const handleServerEventRef = useRef<(evt: ServerEvent) => void>(() => {});
-
-  const sendWs = useCallback((event: ClientEvent) => {
-    const ws = wsRef.current;
-    if (transportModeRef.current === 'ws' && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(event));
-      return;
-    }
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (myUsernameRef.current && sessionTokenRef.current) {
-      headers.Authorization = `Bearer ${sessionTokenRef.current}`;
-      headers['x-biochess-user'] = myUsernameRef.current;
-    }
-
-    rpcInFlightCountRef.current += 1;
-    fetch('/api/rpc', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(event),
-    })
-      .then(async (res) => {
-        if (!res.ok && res.status !== 401) {
-          setConnecting(false);
-          return;
-        }
-        if (res.ok) {
-          poll401CountRef.current = 0;
-        }
-        const data = (await res.json()) as { events?: ServerEvent[] };
-        if (Array.isArray(data.events)) {
-          for (const evt of data.events) {
-            handleServerEventRef.current(evt);
-          }
-        }
-      })
-      .catch(() => {
-        setConnecting(false);
-      })
-      .finally(() => {
-        rpcInFlightCountRef.current = Math.max(0, rpcInFlightCountRef.current - 1);
-      });
+  const handleListenerError = useCallback((err: Error) => {
+    setRuntimeFatalError(err);
   }, []);
 
-  const handleServerEvent = useCallback((evt: ServerEvent) => {
-    if (evt.type === 'auth:ok') {
-      poll401CountRef.current = 0;
-      setConnecting(false);
-      setAuthError(null);
-      setProfile(evt.profile);
-      myUsernameRef.current = evt.profile.username;
-      sessionTokenRef.current = evt.token;
-      if (evt.activeGame) {
-        setActiveGame(evt.activeGame);
-        setWhiteTimeMs(evt.activeGame.whiteTimeMs);
-        setBlackTimeMs(evt.activeGame.blackTimeMs);
-        setViewMode('game');
-      }
-      sendWs({ type: 'lobby:refresh' });
-      return;
-    }
+  const profileLoaded = Boolean(authUser && loadedProfileUid === authUser.uid);
+  const hasProfile = Boolean(profile);
+  const profileUsername = profile?.username || '';
 
-    if (evt.type === 'auth:error') {
-      setConnecting(false);
-      setAuthError(evt.message);
-      setProfile(null);
-      sessionTokenRef.current = null;
-      return;
-    }
-
-    if (evt.type === 'lobby:state') {
-      setOnlinePlayers(evt.onlinePlayers);
-      setLeaderboard(evt.leaderboard);
-      setRecentMatches(evt.recentMatches);
-      setIncomingChallenges(evt.incomingChallenges);
-      setOutgoingChallenges(evt.outgoingChallenges);
-      return;
-    }
-
-    if (evt.type === 'challenge:sent') {
-      setChallengeError(null);
-      setOutgoingChallenges((prev) =>
-        prev.some((c) => c.id === evt.challenge.id) ? prev : [evt.challenge, ...prev]
-      );
-      return;
-    }
-
-    if (evt.type === 'challenge:received') {
-      soundFX.playChallenge();
-      setIncomingChallenges((prev) =>
-        prev.some((c) => c.id === evt.challenge.id) ? prev : [evt.challenge, ...prev]
-      );
-      return;
-    }
-
-    if (evt.type === 'challenge:removed') {
-      setIncomingChallenges((prev) => prev.filter((c) => c.id !== evt.challengeId));
-      setOutgoingChallenges((prev) => prev.filter((c) => c.id !== evt.challengeId));
-      if (evt.reason) {
-        setChallengeError(evt.reason);
-      }
-      return;
-    }
-
-    if (evt.type === 'challenge:error') {
-      setChallengeError(evt.message);
-      return;
-    }
-
-    if (evt.type === 'game:started') {
-      setGameError(null);
-      setChallengeError(null);
-      setActiveGame(evt.game);
-      setWhiteTimeMs(evt.game.whiteTimeMs);
-      setBlackTimeMs(evt.game.blackTimeMs);
-      setViewMode('game');
-      soundFX.playChallenge();
-      return;
-    }
-
-    if (evt.type === 'game:updated') {
-      setGameError(null);
-      setActiveGame((prev) => {
-        if (prev && prev.id === evt.game.id && evt.game.moves.length > prev.moves.length) {
-          const lastMove = evt.game.moves[evt.game.moves.length - 1];
-          if (evt.game.status !== 'active') {
-            soundFX.playGameOver();
-          } else if (lastMove?.san.includes('+') || lastMove?.san.includes('#')) {
-            soundFX.playCheck();
-          } else if (lastMove?.captured) {
-            soundFX.playCapture();
-          } else {
-            soundFX.playMove();
-          }
-        } else if (prev && prev.status === 'active' && evt.game.status !== 'active') {
-          soundFX.playGameOver();
-        }
-        return evt.game;
-      });
-      setWhiteTimeMs(evt.game.whiteTimeMs);
-      setBlackTimeMs(evt.game.blackTimeMs);
-      return;
-    }
-
-    if (evt.type === 'game:chat_message') {
-      setActiveGame((prev) => {
-        if (!prev || prev.id !== evt.gameId) return prev;
-        if (prev.chat.some((m) => m.id === evt.message.id)) return prev;
-        if (
-          evt.message.kind !== 'system' &&
-          evt.message.sender.toLowerCase() !== (myUsernameRef.current || '').toLowerCase()
-        ) {
-          soundFX.playChat();
-        }
-        return {
-          ...prev,
-          chat: [...prev.chat, evt.message],
-        };
-      });
-      return;
-    }
-
-    if (evt.type === 'clock:sync') {
-      if (activeGameIdRef.current === evt.gameId) {
-        setWhiteTimeMs(evt.whiteTimeMs);
-        setBlackTimeMs(evt.blackTimeMs);
-      }
-      return;
-    }
-
-    if (evt.type === 'game:error') {
-      setGameError(evt.message);
-      setTimeout(() => setGameError(null), 3000);
-    }
-  }, [sendWs]);
-
+  // Parse invite link ?sfida=username
   useEffect(() => {
-    handleServerEventRef.current = handleServerEvent;
-  }, [handleServerEvent]);
-
-  useEffect(() => {
-    let unmounted = false;
-    let switchedToHttp = false;
-    let fallbackTimer: NodeJS.Timeout | null = null;
-
     const params = new URLSearchParams(window.location.search);
     const sfida = params.get('sfida');
     if (sfida) {
-      queueMicrotask(() => {
-        if (!unmounted) setInviteTarget(sfida);
-      });
+      queueMicrotask(() => setInviteTarget(sfida));
     }
-
-    async function activateHttpFallback() {
-      if (unmounted) return;
-      switchedToHttp = true;
-      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
-        try {
-          wsRef.current.close();
-        } catch {
-          // ignore
-        }
-      }
-      try {
-        const res = await fetch('/api/rpc?ping=1', { cache: 'no-store' });
-        if (!unmounted && res.ok) {
-          transportModeRef.current = 'http';
-          setTransportMode('http');
-          setWsReady(true);
-          return;
-        }
-      } catch {
-        // retry shortly
-      }
-      if (!unmounted) {
-        reconnectTimerRef.current = setTimeout(activateHttpFallback, 1200);
-      }
-    }
-
-    function connectWs() {
-      if (unmounted) return;
-      let ws: WebSocket;
-      try {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-      } catch {
-        void activateHttpFallback();
-        return;
-      }
-
-      wsRef.current = ws;
-      let opened = false;
-
-      // If WebSocket doesn't open within 600ms (e.g. blocked or unsupported on Vercel), switch cleanly to HTTP
-      fallbackTimer = setTimeout(() => {
-        if (!opened && !unmounted) {
-          void activateHttpFallback();
-        }
-      }, 600);
-
-      ws.onopen = () => {
-        opened = true;
-        if (fallbackTimer) clearTimeout(fallbackTimer);
-        if (unmounted || switchedToHttp) {
-          ws.close();
-          return;
-        }
-        transportModeRef.current = 'ws';
-        setTransportMode('ws');
-        setWsReady(true);
-
-        const savedUser = myUsernameRef.current;
-        const savedToken = sessionTokenRef.current;
-        if (savedUser && savedToken) {
-          setConnecting(true);
-          ws.send(
-            JSON.stringify({
-              type: 'auth:resume',
-              username: savedUser,
-              token: savedToken,
-            } satisfies ClientEvent)
-          );
-        }
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const parsed = JSON.parse(event.data) as ServerEvent;
-          handleServerEventRef.current(parsed);
-        } catch {
-          // ignore malformed payload
-        }
-      };
-
-      ws.onerror = () => {
-        if (!opened && !unmounted) {
-          void activateHttpFallback();
-        }
-      };
-
-      ws.onclose = () => {
-        if (unmounted || switchedToHttp) return;
-        if (fallbackTimer) clearTimeout(fallbackTimer);
-        void activateHttpFallback();
-      };
-    }
-
-    connectWs();
-
-    return () => {
-      unmounted = true;
-      if (fallbackTimer) clearTimeout(fallbackTimer);
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (wsRef.current) wsRef.current.close();
-    };
   }, []);
 
-  // Poll server events sequentially on the unified /api/rpc endpoint when running in HTTP fallback mode.
-  // Active bot games receive all bot moves and chat synchronously via POST /api/rpc, so no polling is needed during bot play.
+  // Firebase Auth listener
   useEffect(() => {
-    if (transportMode !== 'http' || !profile) return;
-    if (activeGame?.status === 'active' && activeGame.isBotGame) return;
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setAuthUser(user);
+      setAuthReady(true);
+      if (!user) {
+        setProfile(null);
+        setLoadedProfileUid(null);
+        setActiveGameId(null);
+        setActiveGameDoc(null);
+        setActiveMoves([]);
+        setActiveMessages([]);
+        setOnlinePlayers([]);
+        setLeaderboard([]);
+        setRecentMatches([]);
+        setIncomingChallenges([]);
+        setOutgoingChallenges([]);
+        setViewMode('lobby');
+      }
+    });
+    return () => unsub();
+  }, []);
 
-    let cancelled = false;
-    let pollTimer: NodeJS.Timeout | null = null;
-    const pollMs = activeGame?.status === 'active' ? 500 : 1500;
+  // Subscribe to own profile once signed in
+  useEffect(() => {
+    if (!authReady || !authUser) return;
+    const uid = authUser.uid;
+    const unsub = subscribeMyProfile(
+      uid,
+      (prof) => {
+        setProfile(prof);
+        setLoadedProfileUid(uid);
+      },
+      handleListenerError
+    );
+    return () => unsub();
+  }, [authReady, authUser, handleListenerError]);
 
-    async function runPoll() {
-      if (cancelled) return;
-      if (
-        rpcInFlightCountRef.current === 0 &&
-        myUsernameRef.current &&
-        sessionTokenRef.current
-      ) {
-        try {
-          const res = await fetch('/api/rpc', {
-            cache: 'no-store',
-            headers: {
-              Authorization: `Bearer ${sessionTokenRef.current}`,
-              'x-biochess-user': myUsernameRef.current,
-            },
-          });
-          if (res.ok) {
-            poll401CountRef.current = 0;
-            const data = (await res.json()) as { events?: ServerEvent[] };
-            if (!cancelled && Array.isArray(data.events)) {
-              for (const evt of data.events) {
-                handleServerEventRef.current(evt);
-              }
-            }
-          } else if (res.status === 401) {
-            poll401CountRef.current += 1;
-            if (poll401CountRef.current >= 4) {
-              const data = (await res.json()) as { events?: ServerEvent[] };
-              if (!cancelled && Array.isArray(data.events)) {
-                for (const evt of data.events) {
-                  handleServerEventRef.current(evt);
-                }
-              }
-            }
+  // Set online presence and clean offline transition on page unload
+  useEffect(() => {
+    if (!authUser || !hasProfile) return;
+    const uid = authUser.uid;
+    void setPresence(uid, true, activeGameId || '').catch((err: Error) =>
+      setRuntimeFatalError(err)
+    );
+
+    const handlePageHide = () => {
+      void setPresence(uid, false).catch(() => {});
+    };
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [authUser, hasProfile, activeGameId]);
+
+  // Subscribe to Lobby & My Games ONLY when profile exists
+  useEffect(() => {
+    if (!authReady || !authUser || !hasProfile) return;
+    const uid = authUser.uid;
+
+    const unsubOnline = subscribeOnlinePlayers(uid, setOnlinePlayers, handleListenerError);
+    const unsubBoard = subscribeLeaderboard(setLeaderboard, handleListenerError);
+    const unsubRecent = subscribeRecentMatches(setRecentMatches, handleListenerError);
+    const unsubChallenges = subscribeChallenges(
+      uid,
+      (inc) => {
+        for (const ch of inc) {
+          if (!prevIncomingChallengeIdsRef.current.has(ch.id)) {
+            soundFX.playChallenge();
           }
-        } catch {
-          // ignore transient network blip
         }
-      }
-      if (!cancelled) {
-        pollTimer = setTimeout(runPoll, pollMs);
-      }
-    }
+        prevIncomingChallengeIdsRef.current = new Set(inc.map((c) => c.id));
+        setIncomingChallenges(inc);
+      },
+      setOutgoingChallenges,
+      handleListenerError
+    );
 
-    pollTimer = setTimeout(runPoll, pollMs);
+    const unsubMyGames = subscribeMyGames(
+      uid,
+      (latestActive, unappliedFinished) => {
+        if (latestActive) {
+          setActiveGameId((curr) => {
+            if (curr !== latestActive.id) {
+              soundFX.playChallenge();
+              setViewMode('game');
+            }
+            return latestActive.id;
+          });
+        }
+
+        for (const finGame of unappliedFinished) {
+          if (!settlingGameIdsRef.current.has(finGame.id)) {
+            settlingGameIdsRef.current.add(finGame.id);
+            void settleMyEloForGame(uid, finGame).catch((err: Error) =>
+              setRuntimeFatalError(err)
+            );
+          }
+        }
+      },
+      handleListenerError
+    );
 
     return () => {
-      cancelled = true;
-      if (pollTimer) clearTimeout(pollTimer);
+      unsubOnline();
+      unsubBoard();
+      unsubRecent();
+      unsubChallenges();
+      unsubMyGames();
     };
-  }, [transportMode, profile, activeGame?.status, activeGame?.isBotGame]);
+  }, [authReady, authUser, hasProfile, handleListenerError]);
 
+  // Subscribe to active game room (game doc + moves + chat)
   useEffect(() => {
-    if (
-      !activeGame ||
-      activeGame.status !== 'active' ||
-      activeGame.timeControl === 'unlimited' ||
-      activeGame.moves.length < 1
-    ) {
+    if (!authReady || !authUser || !hasProfile || !activeGameId) {
       return;
     }
 
-    const interval = setInterval(() => {
-      if (activeGame.turn === 'w') {
-        setWhiteTimeMs((t) => Math.max(0, t - 200));
+    const unsub = subscribeGameRoom(
+      activeGameId,
+      (docSnap) => {
+        setActiveGameDoc(docSnap);
+        if (docSnap?.rematchGameId && docSnap.rematchGameId !== activeGameId) {
+          setActiveGameId(docSnap.rematchGameId);
+          setViewMode('game');
+          soundFX.playChallenge();
+        }
+      },
+      setActiveMoves,
+      setActiveMessages,
+      handleListenerError
+    );
+
+    return () => unsub();
+  }, [authReady, authUser, hasProfile, activeGameId, handleListenerError]);
+
+  const activeGame: GameState | null = useMemo(() => {
+    if (!activeGameId || !activeGameDoc || activeGameDoc.id !== activeGameId) return null;
+    return assembleGameState(activeGameDoc, activeMoves, activeMessages);
+  }, [activeGameId, activeGameDoc, activeMoves, activeMessages]);
+
+  // Audio FX for moves, game end, and opponent chat messages
+  useEffect(() => {
+    if (!activeGame) return;
+    const gId = activeGame.id;
+    const prevCount = prevMovesCountRef.current[gId] ?? activeGame.moves.length;
+    const prevStatus = prevGameStatusRef.current[gId] ?? activeGame.status;
+
+    if (activeGame.moves.length > prevCount) {
+      const lastMove = activeGame.moves[activeGame.moves.length - 1];
+      if (activeGame.status !== 'active') {
+        soundFX.playGameOver();
+      } else if (lastMove?.san.includes('+') || lastMove?.san.includes('#')) {
+        soundFX.playCheck();
+      } else if (lastMove?.captured) {
+        soundFX.playCapture();
       } else {
-        setBlackTimeMs((t) => Math.max(0, t - 200));
+        soundFX.playMove();
       }
-    }, 200);
+    } else if (prevStatus === 'active' && activeGame.status !== 'active') {
+      soundFX.playGameOver();
+    }
 
-    return () => clearInterval(interval);
-  }, [activeGame]);
+    prevMovesCountRef.current[gId] = activeGame.moves.length;
+    prevGameStatusRef.current[gId] = activeGame.status;
 
-  function handleLogin(username: string, password: string) {
+    const prevChat = prevChatCountRef.current[gId] ?? activeGame.chat.length;
+    if (activeGame.chat.length > prevChat) {
+      const newest = activeGame.chat[activeGame.chat.length - 1];
+      if (
+        newest &&
+        newest.kind !== 'system' &&
+        newest.sender.toLowerCase() !== profileUsername.toLowerCase()
+      ) {
+        soundFX.playChat();
+      }
+    }
+    prevChatCountRef.current[gId] = activeGame.chat.length;
+  }, [activeGame, profileUsername]);
+
+  const isClockRunning = Boolean(
+    activeGame &&
+      activeGame.status === 'active' &&
+      activeGame.timeControl !== 'unlimited' &&
+      activeGame.moves.length >= 1
+  );
+
+  const whiteTimeMs =
+    isClockRunning && liveClock && activeGame && liveClock.gameId === activeGame.id
+      ? liveClock.w
+      : (activeGame?.whiteTimeMs ?? 0);
+
+  const blackTimeMs =
+    isClockRunning && liveClock && activeGame && liveClock.gameId === activeGame.id
+      ? liveClock.b
+      : (activeGame?.blackTimeMs ?? 0);
+
+  // Live clock synchronization (drift-free using lastMoveAt) + timeout detection
+  useEffect(() => {
+    if (!activeGame || !isClockRunning) return;
+
+    const tick = () => {
+      const elapsed = Math.max(0, Date.now() - activeGame.lastMoveAt);
+      const nextW =
+        activeGame.turn === 'w' ? Math.max(0, activeGame.whiteTimeMs - elapsed) : activeGame.whiteTimeMs;
+      const nextB =
+        activeGame.turn === 'b' ? Math.max(0, activeGame.blackTimeMs - elapsed) : activeGame.blackTimeMs;
+      setLiveClock({ gameId: activeGame.id, w: nextW, b: nextB });
+
+      if (authUser && (nextW <= 0 || nextB <= 0) && timeoutClaimedIdRef.current !== activeGame.id) {
+        timeoutClaimedIdRef.current = activeGame.id;
+        const timedOut: PieceColor = nextW <= 0 ? 'w' : 'b';
+        void claimTimeoutInFirestore(activeGame, timedOut, authUser.uid).catch((err: Error) =>
+          setRuntimeFatalError(err)
+        );
+      }
+    };
+
+    const initTimer = setTimeout(tick, 0);
+    const interval = setInterval(tick, 200);
+    return () => {
+      clearTimeout(initTimer);
+      clearInterval(interval);
+    };
+  }, [activeGame, isClockRunning, authUser]);
+
+  // Bot turn scheduler (runs smoothly after 280ms when it is the Bot's turn)
+  useEffect(() => {
+    if (!authUser || !activeGame) return;
+    if (activeGame.status !== 'active' || !activeGame.isBotGame || !activeGame.botId) return;
+    if (activeGameDoc && activeGame.moves.length < activeGameDoc.movesCount) return;
+
+    const botTurn =
+      (activeGame.white.isBot && activeGame.turn === 'w') ||
+      (activeGame.black.isBot && activeGame.turn === 'b');
+    if (!botTurn) return;
+
+    const turnKey = `${activeGame.id}:${activeGame.moves.length}`;
+    if (botTurnKeyRef.current === turnKey) return;
+    botTurnKeyRef.current = turnKey;
+
+    const meta =
+      humanMoveMetaRef.current &&
+      humanMoveMetaRef.current.gameId === activeGame.id &&
+      humanMoveMetaRef.current.ply === activeGame.moves.length
+        ? humanMoveMetaRef.current
+        : undefined;
+
+    const timer = setTimeout(() => {
+      void runBotTurnInFirestore({
+        game: activeGame,
+        uid: authUser.uid,
+        liveWhiteMs: whiteTimeMs,
+        liveBlackMs: blackTimeMs,
+        humanLastMoveMeta: meta,
+      }).catch((err: Error) => setRuntimeFatalError(err));
+    }, 280);
+
+    return () => clearTimeout(timer);
+  }, [authUser, activeGame, activeGameDoc, whiteTimeMs, blackTimeMs]);
+
+  async function handleGoogleSignIn() {
     setAuthError(null);
     setConnecting(true);
-    sendWs({ type: 'auth:login', username, password });
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (!msg.includes('popup-closed-by-user')) {
+        setAuthError('Accesso con Google non riuscito. Riprova.');
+      }
+    } finally {
+      setConnecting(false);
+    }
   }
 
-  function handleRegister(username: string, password: string) {
+  async function handleCreateProfile(username: string) {
+    if (!authUser) return;
     setAuthError(null);
     setConnecting(true);
-    sendWs({ type: 'auth:register', username, password });
+    try {
+      const res = await registerBioChessUsername(authUser.uid, username);
+      if (!res.ok) {
+        setAuthError(res.error);
+      } else {
+        setProfile(res.profile);
+      }
+    } catch (err) {
+      setRuntimeFatalError(err as Error);
+    } finally {
+      setConnecting(false);
+    }
   }
 
-  function handleLogout() {
-    sendWs({ type: 'auth:logout' });
-    sessionTokenRef.current = null;
-    myUsernameRef.current = null;
+  async function handleLogout() {
+    if (authUser && profile) {
+      try {
+        await setPresence(authUser.uid, false);
+      } catch {
+        // ignore cleanup failure on logout
+      }
+    }
+    await signOut(auth);
     setProfile(null);
-    setActiveGame(null);
+    setActiveGameId(null);
     setViewMode('lobby');
   }
 
@@ -471,56 +430,42 @@ export function ChessApp() {
     soundFX.setMuted(next);
   }
 
-  function handlePlayerMove(from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n') {
-    if (!activeGame || activeGame.status !== 'active') return;
+  async function handlePlayerMove(
+    from: string,
+    to: string,
+    promotion?: 'q' | 'r' | 'b' | 'n'
+  ) {
+    if (!authUser || !activeGame || activeGame.status !== 'active') return;
     try {
-      const chess = new Chess(activeGame.fen);
-      const movingColor = chess.turn();
-      const moveRes = chess.move({ from, to, promotion: promotion || 'q' });
-      if (moveRes) {
-        if (chess.isCheckmate() || chess.isDraw()) {
-          soundFX.playGameOver();
-        } else if (chess.inCheck()) {
-          soundFX.playCheck();
-        } else if (moveRes.captured) {
-          soundFX.playCapture();
-        } else {
-          soundFX.playMove();
-        }
-        setActiveGame((prev) => {
-          if (!prev || prev.id !== activeGame.id) return prev;
-          return {
-            ...prev,
-            fen: chess.fen(),
-            turn: chess.turn(),
-            moves: [
-              ...prev.moves,
-              {
-                san: moveRes.san,
-                from: moveRes.from,
-                to: moveRes.to,
-                fen: chess.fen(),
-                color: movingColor,
-                captured: moveRes.captured,
-                promotion: moveRes.promotion,
-                timestamp: Date.now(),
-              },
-            ],
-          };
-        });
+      const res = await submitMoveToFirestore({
+        game: activeGame,
+        uid: authUser.uid,
+        from,
+        to,
+        promotion,
+        liveWhiteMs: whiteTimeMs,
+        liveBlackMs: blackTimeMs,
+      });
+      if (!res.ok) {
+        setGameError(res.error);
+        setTimeout(() => setGameError(null), 3000);
+        return;
       }
-    } catch {
-      // let server validate if anything unexpected
+      if (activeGame.isBotGame) {
+        humanMoveMetaRef.current = {
+          gameId: activeGame.id,
+          ply: activeGame.moves.length + 1,
+          quality: res.quality,
+          captured: res.captured,
+          inCheck: res.inCheck,
+        };
+      }
+    } catch (err) {
+      setRuntimeFatalError(err as Error);
     }
-
-    sendWs({
-      type: 'game:move',
-      gameId: activeGame.id,
-      from,
-      to,
-      promotion,
-    });
   }
+
+  const needsUsernameChoice = Boolean(authReady && authUser && profileLoaded && !profile);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#302E2B] text-[#F3F3F2]">
@@ -616,7 +561,7 @@ export function ChessApp() {
               ) : (
                 <button
                   type="button"
-                  onClick={handleLogout}
+                  onClick={() => void handleLogout()}
                   className="px-3 py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[#E5E4E2] text-xs font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0"
                 >
                   <span className="max-w-[120px] truncate">{profile.username}</span>
@@ -625,7 +570,7 @@ export function ChessApp() {
               )
             ) : (
               <span className="text-xs font-semibold text-[#9E9D9A] whitespace-nowrap shrink-0">
-                {wsReady ? 'Connesso' : 'Connessione...'}
+                {authReady ? 'Pronto' : 'Connessione...'}
               </span>
             )}
           </div>
@@ -635,10 +580,16 @@ export function ChessApp() {
       <main className="flex-1">
         {!profile ? (
           <UsernameGateModal
+            step={needsUsernameChoice ? 'choose_username' : 'google'}
             error={authError}
-            connecting={connecting || !wsReady}
-            onLogin={handleLogin}
-            onRegister={handleRegister}
+            connecting={
+              !authReady ||
+              connecting ||
+              Boolean(authUser && !profileLoaded)
+            }
+            onGoogleSignIn={() => void handleGoogleSignIn()}
+            onCreateProfile={(u) => void handleCreateProfile(u)}
+            onSwitchGoogleAccount={() => void handleLogout()}
             onClearError={() => setAuthError(null)}
           />
         ) : (
@@ -665,20 +616,67 @@ export function ChessApp() {
                   blackTimeMs={blackTimeMs}
                   muted={muted}
                   onToggleMute={handleToggleMute}
-                  onMove={handlePlayerMove}
-                  onSendChat={(text) =>
-                    sendWs({ type: 'game:chat', gameId: activeGame.id, text })
-                  }
-                  onResign={() => sendWs({ type: 'game:resign', gameId: activeGame.id })}
-                  onOfferDraw={() => sendWs({ type: 'game:offer_draw', gameId: activeGame.id })}
-                  onRespondDraw={(accept) =>
-                    sendWs({ type: 'game:respond_draw', gameId: activeGame.id, accept })
-                  }
-                  onRematch={() => sendWs({ type: 'game:rematch', gameId: activeGame.id })}
+                  onMove={(from, to, promo) => void handlePlayerMove(from, to, promo)}
+                  onSendChat={(text) => {
+                    if (!authUser) return;
+                    void sendPlayerChatAndMaybeBotReply(
+                      activeGame,
+                      authUser.uid,
+                      profile.username,
+                      text
+                    ).catch((err: Error) => setRuntimeFatalError(err));
+                  }}
+                  onResign={() => {
+                    if (!authUser) return;
+                    const myColor: PieceColor =
+                      !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
+                    void resignGameInFirestore(
+                      activeGame,
+                      myColor,
+                      profile.username,
+                      authUser.uid
+                    ).catch((err: Error) => setRuntimeFatalError(err));
+                  }}
+                  onOfferDraw={() => {
+                    if (!authUser) return;
+                    const myColor: PieceColor =
+                      !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
+                    void offerDrawInFirestore(
+                      activeGame,
+                      myColor,
+                      profile.username,
+                      authUser.uid
+                    ).catch((err: Error) => setRuntimeFatalError(err));
+                  }}
+                  onRespondDraw={(accept) => {
+                    if (!authUser) return;
+                    void respondDrawInFirestore(
+                      activeGame,
+                      accept,
+                      profile.username,
+                      authUser.uid
+                    ).catch((err: Error) => setRuntimeFatalError(err));
+                  }}
+                  onRematch={() => {
+                    if (!authUser) return;
+                    const myColor: PieceColor =
+                      !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
+                    void requestOrAcceptRematchInFirestore(activeGame, myColor, authUser.uid)
+                      .then((newId) => {
+                        if (newId) {
+                          setActiveGameId(newId);
+                          setViewMode('game');
+                          soundFX.playChallenge();
+                        }
+                      })
+                      .catch((err: Error) => setRuntimeFatalError(err));
+                  }}
                   onBackToLobby={() => {
                     if (activeGame.status !== 'active') {
-                      sendWs({ type: 'game:leave_view' });
-                      setActiveGame(null);
+                      setActiveGameId(null);
+                      if (authUser) {
+                        void setPresence(authUser.uid, true, '').catch(() => {});
+                      }
                     }
                     setViewMode('lobby');
                   }}
@@ -704,26 +702,59 @@ export function ChessApp() {
                   challengeError={challengeError}
                   initialTargetUsername={inviteTarget}
                   onSendChallenge={(toUsername, timeControl, colorPref) => {
+                    if (!authUser) return;
                     setChallengeError(null);
-                    sendWs({
-                      type: 'challenge:send',
+                    void sendChallengeToUser(
+                      profile,
+                      authUser.uid,
                       toUsername,
                       timeControl,
-                      colorPref,
-                    });
+                      colorPref
+                    )
+                      .then((res) => {
+                        if (!res.ok) setChallengeError(res.error);
+                      })
+                      .catch((err: Error) => setRuntimeFatalError(err));
                   }}
-                  onCancelChallenge={(challengeId) =>
-                    sendWs({ type: 'challenge:cancel', challengeId })
-                  }
-                  onRespondChallenge={(challengeId, accept) =>
-                    sendWs({ type: 'challenge:respond', challengeId, accept })
-                  }
+                  onCancelChallenge={(challengeId) => {
+                    void cancelPendingChallenge(challengeId).catch((err: Error) =>
+                      setRuntimeFatalError(err)
+                    );
+                  }}
+                  onRespondChallenge={(challengeId, accept) => {
+                    if (!authUser) return;
+                    setChallengeError(null);
+                    void respondToChallenge(challengeId, accept, authUser.uid)
+                      .then((res) => {
+                        if (!res.ok) {
+                          setChallengeError(res.error);
+                        } else if (res.gameId) {
+                          setActiveGameId(res.gameId);
+                          setViewMode('game');
+                          soundFX.playChallenge();
+                        }
+                      })
+                      .catch((err: Error) => setRuntimeFatalError(err));
+                  }}
                   onStartBotGame={(
                     botId: BotId,
                     timeControl: TimeControlId,
                     colorPref: ColorPref
                   ) => {
-                    sendWs({ type: 'bot:start', botId, timeControl, colorPref });
+                    if (!authUser) return;
+                    void createBotGameInFirestore(
+                      profile,
+                      authUser.uid,
+                      botId,
+                      timeControl,
+                      colorPref
+                    )
+                      .then((gameId) => {
+                        setActiveGameId(gameId);
+                        setViewMode('game');
+                        soundFX.playChallenge();
+                      })
+                      .catch((err: Error) => setRuntimeFatalError(err));
                   }}
                 />
               </motion.div>
@@ -735,20 +766,24 @@ export function ChessApp() {
       {profile && incomingChallenges.length > 0 && viewMode === 'game' && (
         <IncomingChallengeToast
           challenge={incomingChallenges[0]}
-          onAccept={() =>
-            sendWs({
-              type: 'challenge:respond',
-              challengeId: incomingChallenges[0].id,
-              accept: true,
-            })
-          }
-          onDecline={() =>
-            sendWs({
-              type: 'challenge:respond',
-              challengeId: incomingChallenges[0].id,
-              accept: false,
-            })
-          }
+          onAccept={() => {
+            if (!authUser) return;
+            void respondToChallenge(incomingChallenges[0].id, true, authUser.uid)
+              .then((res) => {
+                if (res.ok && res.gameId) {
+                  setActiveGameId(res.gameId);
+                  setViewMode('game');
+                  soundFX.playChallenge();
+                }
+              })
+              .catch((err: Error) => setRuntimeFatalError(err));
+          }}
+          onDecline={() => {
+            if (!authUser) return;
+            void respondToChallenge(incomingChallenges[0].id, false, authUser.uid).catch(
+              (err: Error) => setRuntimeFatalError(err)
+            );
+          }}
         />
       )}
     </div>

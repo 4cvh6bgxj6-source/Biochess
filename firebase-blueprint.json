@@ -1,0 +1,534 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public chess profile and ELO rating for a verified BioChess player (zero PII stored).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20,
+          "pattern": "^[a-zA-Z0-9_]{2,20}$"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20,
+          "pattern": "^[a-z0-9_]{2,20}$"
+        },
+        "elo": {
+          "type": "number"
+        },
+        "wins": {
+          "type": "number"
+        },
+        "losses": {
+          "type": "number"
+        },
+        "draws": {
+          "type": "number"
+        },
+        "online": {
+          "type": "boolean"
+        },
+        "activeGameId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "username",
+        "key",
+        "elo",
+        "wins",
+        "losses",
+        "draws",
+        "online",
+        "activeGameId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UsernameClaim": {
+      "title": "UsernameClaim",
+      "description": "Unique lowercase username reservation mapped to a Firebase UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20,
+          "pattern": "^[a-zA-Z0-9_]{2,20}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "username", "createdAt"]
+    },
+    "Challenge": {
+      "title": "Challenge",
+      "description": "Direct PvP chess challenge between two verified players.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fromUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fromUsername": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "fromElo": {
+          "type": "number"
+        },
+        "toUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "toUsername": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "timeControl": {
+          "type": "string",
+          "enum": ["blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
+        },
+        "colorPref": {
+          "type": "string",
+          "enum": ["random", "w", "b"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "declined", "cancelled"]
+        },
+        "gameId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "expiresAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "fromUid",
+        "fromUsername",
+        "fromElo",
+        "toUid",
+        "toUsername",
+        "timeControl",
+        "colorPref",
+        "status",
+        "gameId",
+        "expiresAtMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Game": {
+      "title": "Game",
+      "description": "Active or finished BioChess match (PvP or vs Bot).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "whiteUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "whiteUsername": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "whiteElo": {
+          "type": "number"
+        },
+        "whiteIsBot": {
+          "type": "boolean"
+        },
+        "blackUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "blackUsername": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "blackElo": {
+          "type": "number"
+        },
+        "blackIsBot": {
+          "type": "boolean"
+        },
+        "participantUids": {
+          "type": "array"
+        },
+        "fen": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 200
+        },
+        "pgn": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "turn": {
+          "type": "string",
+          "enum": ["w", "b"]
+        },
+        "movesCount": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "checkmate", "stalemate", "draw", "resigned", "timeout"]
+        },
+        "winner": {
+          "type": "string",
+          "enum": ["", "w", "b", "draw"]
+        },
+        "endReason": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "timeControl": {
+          "type": "string",
+          "enum": ["blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
+        },
+        "whiteTimeMs": {
+          "type": "number"
+        },
+        "blackTimeMs": {
+          "type": "number"
+        },
+        "drawOfferBy": {
+          "type": "string",
+          "enum": ["", "w", "b"]
+        },
+        "rematchRequestedBy": {
+          "type": "string",
+          "enum": ["", "w", "b"]
+        },
+        "rematchGameId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "whiteEloApplied": {
+          "type": "boolean"
+        },
+        "blackEloApplied": {
+          "type": "boolean"
+        },
+        "isBotGame": {
+          "type": "boolean"
+        },
+        "botId": {
+          "type": "string",
+          "enum": ["", "knight", "bishop", "king"]
+        },
+        "lastMoveAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "whiteUid",
+        "whiteUsername",
+        "whiteElo",
+        "whiteIsBot",
+        "blackUid",
+        "blackUsername",
+        "blackElo",
+        "blackIsBot",
+        "participantUids",
+        "fen",
+        "pgn",
+        "turn",
+        "movesCount",
+        "status",
+        "winner",
+        "endReason",
+        "timeControl",
+        "whiteTimeMs",
+        "blackTimeMs",
+        "drawOfferBy",
+        "rematchRequestedBy",
+        "rematchGameId",
+        "whiteEloApplied",
+        "blackEloApplied",
+        "isBotGame",
+        "botId",
+        "lastMoveAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GameMoveDoc": {
+      "title": "GameMoveDoc",
+      "description": "Individual chess ply move inside a game's moves subcollection.",
+      "type": "object",
+      "properties": {
+        "ply": {
+          "type": "number"
+        },
+        "san": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16
+        },
+        "from": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2
+        },
+        "to": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2
+        },
+        "fen": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 200
+        },
+        "color": {
+          "type": "string",
+          "enum": ["w", "b"]
+        },
+        "captured": {
+          "type": "string",
+          "maxLength": 2
+        },
+        "promotion": {
+          "type": "string",
+          "maxLength": 2
+        },
+        "quality": {
+          "type": "string",
+          "enum": ["book", "brilliant", "great", "good", "mistake", "blunder", "neutral"]
+        },
+        "cpLoss": {
+          "type": "number"
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ply",
+        "san",
+        "from",
+        "to",
+        "fen",
+        "color",
+        "captured",
+        "promotion",
+        "quality",
+        "cpLoss",
+        "authorUid",
+        "createdAt"
+      ]
+    },
+    "GameChatMessageDoc": {
+      "title": "GameChatMessageDoc",
+      "description": "In-match chat message inside a game's messages subcollection.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sender": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["player", "bot", "system"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "sender", "authorUid", "text", "kind", "createdAt"]
+    },
+    "RecentMatchSummaryDoc": {
+      "title": "RecentMatchSummaryDoc",
+      "description": "Public summary record for a finished chess match.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "white": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "black": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "winner": {
+          "type": "string",
+          "enum": ["w", "b", "draw"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["checkmate", "stalemate", "draw", "resigned", "timeout"]
+        },
+        "endReason": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "movesCount": {
+          "type": "number"
+        },
+        "timeControl": {
+          "type": "string",
+          "enum": ["blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
+        },
+        "isBotGame": {
+          "type": "boolean"
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "white",
+        "black",
+        "winner",
+        "status",
+        "endReason",
+        "movesCount",
+        "timeControl",
+        "isBotGame",
+        "authorUid",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public player profile and ELO rating (no PII)."
+    },
+    "/usernames/{usernameKey}": {
+      "schema": { "$ref": "#/entities/UsernameClaim" },
+      "description": "Unique lowercase username reservation lookup."
+    },
+    "/challenges/{challengeId}": {
+      "schema": { "$ref": "#/entities/Challenge" },
+      "description": "Direct PvP chess challenges."
+    },
+    "/games/{gameId}": {
+      "schema": { "$ref": "#/entities/Game" },
+      "description": "Active and finished chess matches."
+    },
+    "/games/{gameId}/moves/{moveId}": {
+      "schema": { "$ref": "#/entities/GameMoveDoc" },
+      "description": "Ordered chess ply moves for a match."
+    },
+    "/games/{gameId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/GameChatMessageDoc" },
+      "description": "Chat messages for a match."
+    },
+    "/recentMatches/{matchId}": {
+      "schema": { "$ref": "#/entities/RecentMatchSummaryDoc" },
+      "description": "Public history of finished matches."
+    }
+  }
+}
