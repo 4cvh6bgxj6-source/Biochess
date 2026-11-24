@@ -43,6 +43,8 @@ export interface StoredPlayer {
 export interface PersistedStore {
   players: Record<string, StoredPlayer>;
   recentMatches: RecentMatchSummary[];
+  games?: Record<string, GameState>;
+  challenges?: Record<string, Challenge>;
 }
 
 export interface HttpSessionEntry {
@@ -63,7 +65,7 @@ export interface BioChessEngineState {
   saveTimer: NodeJS.Timeout | null;
 }
 
-const HTTP_SESSION_TTL_MS = 15_000;
+const HTTP_SESSION_TTL_MS = 45_000;
 
 function resolveStorePath(): string {
   const localDir = path.join(process.cwd(), 'data');
@@ -95,23 +97,63 @@ function loadStoreFromDisk(storePath: string): PersistedStore {
       return {
         players: parsed.players || {},
         recentMatches: Array.isArray(parsed.recentMatches) ? parsed.recentMatches : [],
+        games: parsed.games && typeof parsed.games === 'object' ? parsed.games : {},
+        challenges:
+          parsed.challenges && typeof parsed.challenges === 'object' ? parsed.challenges : {},
       };
     }
   } catch (err) {
     console.error('Failed to load store:', err);
   }
-  return { players: {}, recentMatches: [] };
+  return { players: {}, recentMatches: [], games: {}, challenges: {} };
 }
 
 declare global {
   var __biochessEngine: BioChessEngineState | undefined;
+  var __biochessSessionSecret: string | undefined;
+}
+
+function getSessionSecret(): string {
+  const configured =
+    process.env.SESSION_SECRET || process.env.BIOCHESS_SESSION_SECRET || '';
+  if (configured.trim().length >= 16) {
+    return configured.trim();
+  }
+  if (!globalThis.__biochessSessionSecret) {
+    globalThis.__biochessSessionSecret = crypto.randomBytes(32).toString('hex');
+  }
+  return globalThis.__biochessSessionSecret;
+}
+
+function hydrateMapsFromStore(eng: BioChessEngineState, disk: PersistedStore) {
+  if (disk.games) {
+    for (const [gid, g] of Object.entries(disk.games)) {
+      const existing = eng.games.get(gid);
+      if (!existing || (g.moves?.length || 0) > (existing.moves?.length || 0) || g.status !== existing.status) {
+        eng.games.set(gid, g);
+        if (g.status === 'active') {
+          if (!g.white.isBot) eng.activeGameByUser.set(normalizeKey(g.white.username), g.id);
+          if (!g.black.isBot) eng.activeGameByUser.set(normalizeKey(g.black.username), g.id);
+        }
+      }
+    }
+  }
+  if (disk.challenges) {
+    const now = Date.now();
+    for (const [cid, ch] of Object.entries(disk.challenges)) {
+      if (ch.expiresAt > now && !eng.challenges.has(cid)) {
+        eng.challenges.set(cid, ch);
+      }
+    }
+  }
 }
 
 export function getEngine(): BioChessEngineState {
   if (!globalThis.__biochessEngine) {
     const storePath = resolveStorePath();
-    globalThis.__biochessEngine = {
-      store: loadStoreFromDisk(storePath),
+    const loaded = loadStoreFromDisk(storePath);
+    const eng: BioChessEngineState = {
+      store: loaded,
       storePath,
       socketsByUser: new Map(),
       userBySocket: new Map(),
@@ -122,6 +164,8 @@ export function getEngine(): BioChessEngineState {
       botMoveTimers: new Map(),
       saveTimer: null,
     };
+    hydrateMapsFromStore(eng, loaded);
+    globalThis.__biochessEngine = eng;
   }
   return globalThis.__biochessEngine;
 }
@@ -137,6 +181,20 @@ export function saveStoreNow() {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
+    const persistedGames: Record<string, GameState> = {};
+    const gameValues = Array.from(eng.games.values()).slice(-40);
+    for (const g of gameValues) {
+      persistedGames[g.id] = g;
+    }
+    const persistedChallenges: Record<string, Challenge> = {};
+    const now = Date.now();
+    for (const [cid, ch] of eng.challenges.entries()) {
+      if (ch.expiresAt > now) {
+        persistedChallenges[cid] = ch;
+      }
+    }
+    eng.store.games = persistedGames;
+    eng.store.challenges = persistedChallenges;
     fs.writeFileSync(eng.storePath, JSON.stringify(eng.store, null, 2), 'utf-8');
   } catch (err) {
     console.error('Failed to save store:', err);
@@ -158,6 +216,67 @@ export function makeId(prefix: string): string {
 
 export function makeSessionToken(): string {
   return crypto.randomBytes(24).toString('hex');
+}
+
+interface SignedTokenPayload {
+  k: string;
+  u: string;
+  e: number;
+  w: number;
+  l: number;
+  d: number;
+  exp: number;
+}
+
+export function issueSignedSessionToken(player: StoredPlayer): string {
+  const payloadObj: SignedTokenPayload = {
+    k: player.key,
+    u: player.username,
+    e: player.elo,
+    w: player.wins,
+    l: player.losses,
+    d: player.draws,
+    exp: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payloadObj), 'utf8').toString('base64url');
+  const sig = crypto
+    .createHmac('sha256', getSessionSecret())
+    .update(payloadB64)
+    .digest('base64url');
+  return `${payloadB64}.${sig}`;
+}
+
+function verifySignedSessionToken(token: string, expectedKey: string): SignedTokenPayload | null {
+  const dotIdx = token.indexOf('.');
+  if (dotIdx <= 0) return null;
+  const payloadB64 = token.slice(0, dotIdx);
+  const sig = token.slice(dotIdx + 1);
+  if (!payloadB64 || !sig) return null;
+  try {
+    const expectedSig = crypto
+      .createHmac('sha256', getSessionSecret())
+      .update(payloadB64)
+      .digest('base64url');
+    const a = Buffer.from(sig, 'utf8');
+    const b = Buffer.from(expectedSig, 'utf8');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const parsed = JSON.parse(
+      Buffer.from(payloadB64, 'base64url').toString('utf8')
+    ) as SignedTokenPayload;
+    if (
+      !parsed ||
+      typeof parsed.k !== 'string' ||
+      typeof parsed.u !== 'string' ||
+      typeof parsed.exp !== 'number' ||
+      parsed.exp <= Date.now() ||
+      parsed.k !== expectedKey
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export function hashPassword(password: string): string {
@@ -534,6 +653,7 @@ function createChessMatch(params: {
     eng.activeGameByUser.set(normalizeKey(params.black.username), game.id);
   }
 
+  saveStoreNow();
   return game;
 }
 
@@ -636,6 +756,7 @@ function applyMoveOnGame(
   } else if (chess.isDraw()) {
     finalizeGame(game, 'draw', 'draw', 'Patta per regola delle 50 mosse.');
   } else {
+    scheduleSave();
     broadcastGame(game, 'game:updated');
   }
 
@@ -754,17 +875,19 @@ export function processAuthMessage(
       return null;
     }
 
-    eng.store.players[key] = {
+    const newPlayer: StoredPlayer = {
       username: cleanName,
       key,
       passwordHash: hashPassword(msg.password),
-      token: makeSessionToken(),
+      token: '',
       elo: 300,
       wins: 0,
       losses: 0,
       draws: 0,
       lastSeenAt: Date.now(),
     };
+    newPlayer.token = issueSignedSessionToken(newPlayer);
+    eng.store.players[key] = newPlayer;
     saveStoreNow();
     return key;
   }
@@ -779,7 +902,14 @@ export function processAuthMessage(
     }
     const cleanName = msg.username.trim();
     const key = normalizeKey(cleanName);
-    const existing = eng.store.players[key];
+    let existing = eng.store.players[key];
+    if (!existing) {
+      const disk = loadStoreFromDisk(eng.storePath);
+      if (disk.players[key]) {
+        eng.store.players[key] = disk.players[key];
+        existing = disk.players[key];
+      }
+    }
 
     if (!cleanName || !existing || !verifyPassword(msg.password, existing.passwordHash)) {
       reply({
@@ -789,7 +919,7 @@ export function processAuthMessage(
       return null;
     }
 
-    existing.token = makeSessionToken();
+    existing.token = issueSignedSessionToken(existing);
     existing.lastSeenAt = Date.now();
     saveStoreNow();
     return key;
@@ -801,13 +931,40 @@ export function processAuthMessage(
       return null;
     }
     const key = normalizeKey(msg.username);
-    const existing = eng.store.players[key];
+    let existing = eng.store.players[key];
     if (!existing || !verifyToken(msg.token, existing.token)) {
-      reply({ type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' });
-      return null;
+      const disk = loadStoreFromDisk(eng.storePath);
+      if (disk.players[key]) {
+        eng.store.players[key] = disk.players[key];
+        existing = disk.players[key];
+      }
     }
-    existing.lastSeenAt = Date.now();
-    return key;
+    if (existing && verifyToken(msg.token, existing.token)) {
+      existing.lastSeenAt = Date.now();
+      return key;
+    }
+    const signed = verifySignedSessionToken(msg.token, key);
+    if (signed) {
+      if (!existing) {
+        existing = {
+          username: signed.u,
+          key,
+          token: msg.token,
+          elo: signed.e,
+          wins: signed.w,
+          losses: signed.l,
+          draws: signed.d,
+          lastSeenAt: Date.now(),
+        };
+        eng.store.players[key] = existing;
+      } else {
+        existing.token = msg.token;
+        existing.lastSeenAt = Date.now();
+      }
+      return key;
+    }
+    reply({ type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' });
+    return null;
   }
 
   return null;
@@ -883,6 +1040,7 @@ export function handleAuthenticatedAction(
       targetOnline,
     };
     eng.challenges.set(challenge.id, challenge);
+    saveStoreNow();
 
     reply({ type: 'challenge:sent', challenge });
     if (targetOnline) {
@@ -897,6 +1055,7 @@ export function handleAuthenticatedAction(
     const ch = eng.challenges.get(msg.challengeId);
     if (!ch || normalizeKey(ch.from) !== userKey) return;
     eng.challenges.delete(msg.challengeId);
+    saveStoreNow();
     sendToUser(userKey, { type: 'challenge:removed', challengeId: ch.id });
     sendToUser(normalizeKey(ch.to), { type: 'challenge:removed', challengeId: ch.id });
     broadcastLobbyToAll();
@@ -905,7 +1064,11 @@ export function handleAuthenticatedAction(
 
   if (msg.type === 'challenge:respond') {
     if (typeof msg.challengeId !== 'string') return;
-    const ch = eng.challenges.get(msg.challengeId);
+    let ch = eng.challenges.get(msg.challengeId);
+    if (!ch) {
+      hydrateMapsFromStore(eng, loadStoreFromDisk(eng.storePath));
+      ch = eng.challenges.get(msg.challengeId);
+    }
     if (!ch) {
       reply({ type: 'challenge:error', message: 'La sfida non è più disponibile.' });
       return;
@@ -913,6 +1076,7 @@ export function handleAuthenticatedAction(
     if (normalizeKey(ch.to) !== userKey) return;
 
     eng.challenges.delete(ch.id);
+    saveStoreNow();
     const fromKey = normalizeKey(ch.from);
 
     if (!msg.accept) {
@@ -1002,6 +1166,13 @@ export function handleAuthenticatedAction(
     return;
   }
 
+  const getGameOrHydrate = (gameId: string): GameState | undefined => {
+    const existing = eng.games.get(gameId);
+    if (existing) return existing;
+    hydrateMapsFromStore(eng, loadStoreFromDisk(eng.storePath));
+    return eng.games.get(gameId);
+  };
+
   if (msg.type === 'game:move') {
     if (
       typeof msg.gameId !== 'string' ||
@@ -1010,7 +1181,7 @@ export function handleAuthenticatedAction(
     ) {
       return;
     }
-    const game = eng.games.get(msg.gameId);
+    const game = getGameOrHydrate(msg.gameId);
     if (!game) return;
     const myColor = getParticipantColor(game, userKey);
     if (!myColor || game.turn !== myColor) {
@@ -1064,7 +1235,7 @@ export function handleAuthenticatedAction(
 
   if (msg.type === 'game:chat') {
     if (typeof msg.gameId !== 'string' || typeof msg.text !== 'string') return;
-    const game = eng.games.get(msg.gameId);
+    const game = getGameOrHydrate(msg.gameId);
     if (!game) return;
     const myColor = getParticipantColor(game, userKey);
     if (!myColor) return;
@@ -1108,7 +1279,7 @@ export function handleAuthenticatedAction(
 
   if (msg.type === 'game:resign') {
     if (typeof msg.gameId !== 'string') return;
-    const game = eng.games.get(msg.gameId);
+    const game = getGameOrHydrate(msg.gameId);
     if (!game || game.status !== 'active') return;
     const myColor = getParticipantColor(game, userKey);
     if (!myColor) return;
@@ -1119,7 +1290,7 @@ export function handleAuthenticatedAction(
 
   if (msg.type === 'game:offer_draw') {
     if (typeof msg.gameId !== 'string') return;
-    const game = eng.games.get(msg.gameId);
+    const game = getGameOrHydrate(msg.gameId);
     if (!game || game.status !== 'active') return;
     const myColor = getParticipantColor(game, userKey);
     if (!myColor || game.drawOfferBy === myColor) return;
@@ -1162,7 +1333,7 @@ export function handleAuthenticatedAction(
 
   if (msg.type === 'game:respond_draw') {
     if (typeof msg.gameId !== 'string') return;
-    const game = eng.games.get(msg.gameId);
+    const game = getGameOrHydrate(msg.gameId);
     if (!game || game.status !== 'active') return;
     const myColor = getParticipantColor(game, userKey);
     if (!myColor || !game.drawOfferBy || game.drawOfferBy === myColor) return;
@@ -1180,7 +1351,7 @@ export function handleAuthenticatedAction(
 
   if (msg.type === 'game:rematch') {
     if (typeof msg.gameId !== 'string') return;
-    const game = eng.games.get(msg.gameId);
+    const game = getGameOrHydrate(msg.gameId);
     if (!game || game.status === 'active') return;
     const myColor = getParticipantColor(game, userKey);
     if (!myColor) return;
@@ -1246,18 +1417,40 @@ export function verifyHttpBearerHeaders(
   if (!authHeader || !rawUser) return null;
   if (!authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.slice(7).trim();
+  if (!token) return null;
   const key = normalizeKey(rawUser);
   const eng = getEngine();
   let player = eng.store.players[key];
-  if (!player) {
+  if (!player || !verifyToken(token, player.token)) {
     const disk = loadStoreFromDisk(eng.storePath);
+    hydrateMapsFromStore(eng, disk);
     if (disk.players[key]) {
       eng.store.players[key] = disk.players[key];
       player = disk.players[key];
     }
   }
-  if (!player || !verifyToken(token, player.token)) return null;
-  return key;
+  if (player && verifyToken(token, player.token)) {
+    return key;
+  }
+  const signed = verifySignedSessionToken(token, key);
+  if (signed) {
+    if (!player) {
+      eng.store.players[key] = {
+        username: signed.u,
+        key,
+        token,
+        elo: signed.e,
+        wins: signed.w,
+        losses: signed.l,
+        draws: signed.d,
+        lastSeenAt: Date.now(),
+      };
+    } else {
+      player.token = token;
+    }
+    return key;
+  }
+  return null;
 }
 
 export function tickServerClocks() {

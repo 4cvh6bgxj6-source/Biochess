@@ -29,9 +29,76 @@
       "losses": 1,
       "draws": 0,
       "lastSeenAt": 1795531452320
+    },
+    "chip": {
+      "username": "Chip",
+      "key": "chip",
+      "passwordHash": "203d9b7d51259877c9ce26f0dd6e3b13:1229af0dbac55e7150ca3f10a472495e445e8eaed9fa36a55ea1568f6a014eae3db6d396b06e096514f0303d3f05000a62983af85212c871c06de86862bcd8c4",
+      "token": "",
+      "elo": 300,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "lastSeenAt": 1795542723534
+    },
+    "wstest_84008": {
+      "username": "WsTest_84008",
+      "key": "wstest_84008",
+      "passwordHash": "e33abf59640df17826e9ac7fec82ddad:6d1272e9d8ce5ed661735545055442c487e455464d01a09fc9223f7f27d17f50c9d510fb7ab8a7a05a43a530a9cc403432ae9ce73997cf84cc52f2a4a1a7bac0",
+      "token": "682dfd1aa8dbc5873a791ccd72a8cda62e56953b27bbef03",
+      "elo": 300,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "lastSeenAt": 1795542784184
+    },
+    "testa_17968": {
+      "username": "TestA_17968",
+      "key": "testa_17968",
+      "passwordHash": "b9ea70f9b6b45d939b7eeb6c74ac13b7:a5162a0c86d71c1fed7bfbb4171af996b15ee98472ebc687d445de479b8446651099b3258ed987150d11c9c2c492e6461c56b0d9016ccbce3960574508888e1b",
+      "token": "7943193863681b68898ca633b44b911e1ce91e3897f71e06",
+      "elo": 350,
+      "wins": 1,
+      "losses": 0,
+      "draws": 0,
+      "lastSeenAt": 1795542818270
+    },
+    "testb_17968": {
+      "username": "TestB_17968",
+      "key": "testb_17968",
+      "passwordHash": "68df7ada418a3afbeabb07f976bebf24:4761f499ae0982b5d05583dd6add8140081e85998b1bd6bd0b259f92285cc947a78327fc870afe0b3a066341dac7d1e27655eeff15efd11f1a26f9e53dbae85d",
+      "token": "62ff0bf3c14530e757fe0ecf81e424e543fe7666b1901812",
+      "elo": 224,
+      "wins": 0,
+      "losses": 1,
+      "draws": 0,
+      "lastSeenAt": 1795542818271
+    },
+    "pwuser1": {
+      "username": "PwUser1",
+      "key": "pwuser1",
+      "passwordHash": "e1b6d4b70ea648c6efaac301b390c089:d09a913be231bbeaabf69379933efd3dee175c406c0b4cf96eb6ce0bc07ac6f1d446fdd9cd64ede0f0b9aca111513c2865a4623e4d0fa7639af8079346048b89",
+      "token": "fe808bb4a3810f811087c6a62c5cdbd989cca85172cf5ec5",
+      "elo": 300,
+      "wins": 0,
+      "losses": 0,
+      "draws": 0,
+      "lastSeenAt": 1795542941155
     }
   },
   "recentMatches": [
+    {
+      "id": "game_e68e28f200e0",
+      "white": "TestA_17968",
+      "black": "TestB_17968",
+      "winner": "w",
+      "status": "timeout",
+      "endReason": "TestB_17968 ha esaurito il tempo.",
+      "movesCount": 1,
+      "timeControl": "blitz_5_0",
+      "finishedAt": 1795543118257,
+      "isBotGame": false
+    },
     {
       "id": "game_c8ac1dd0fa35",
       "white": "CHESS",

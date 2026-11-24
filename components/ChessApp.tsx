@@ -31,6 +31,7 @@ export function ChessApp() {
   const sessionTokenRef = useRef<string | null>(null);
   const transportModeRef = useRef<'ws' | 'http'>('ws');
   const rpcInFlightCountRef = useRef(0);
+  const poll401CountRef = useRef(0);
 
   const [wsReady, setWsReady] = useState(false);
   const [transportMode, setTransportMode] = useState<'ws' | 'http'>('ws');
@@ -90,6 +91,9 @@ export function ChessApp() {
           setConnecting(false);
           return;
         }
+        if (res.ok) {
+          poll401CountRef.current = 0;
+        }
         const data = (await res.json()) as { events?: ServerEvent[] };
         if (Array.isArray(data.events)) {
           for (const evt of data.events) {
@@ -107,6 +111,7 @@ export function ChessApp() {
 
   const handleServerEvent = useCallback((evt: ServerEvent) => {
     if (evt.type === 'auth:ok') {
+      poll401CountRef.current = 0;
       setConnecting(false);
       setAuthError(null);
       setProfile(evt.profile);
@@ -357,17 +362,15 @@ export function ChessApp() {
     };
   }, []);
 
-  // Poll server events sequentially on the unified /api/rpc endpoint when running in HTTP fallback mode
+  // Poll server events sequentially on the unified /api/rpc endpoint when running in HTTP fallback mode.
+  // Active bot games receive all bot moves and chat synchronously via POST /api/rpc, so no polling is needed during bot play.
   useEffect(() => {
     if (transportMode !== 'http' || !profile) return;
+    if (activeGame?.status === 'active' && activeGame.isBotGame) return;
+
     let cancelled = false;
     let pollTimer: NodeJS.Timeout | null = null;
-    const pollMs =
-      activeGame?.status === 'active'
-        ? activeGame.isBotGame
-          ? 4000
-          : 500
-        : 1500;
+    const pollMs = activeGame?.status === 'active' ? 500 : 1500;
 
     async function runPoll() {
       if (cancelled) return;
@@ -384,11 +387,22 @@ export function ChessApp() {
               'x-biochess-user': myUsernameRef.current,
             },
           });
-          if (res.ok || res.status === 401) {
+          if (res.ok) {
+            poll401CountRef.current = 0;
             const data = (await res.json()) as { events?: ServerEvent[] };
             if (!cancelled && Array.isArray(data.events)) {
               for (const evt of data.events) {
                 handleServerEventRef.current(evt);
+              }
+            }
+          } else if (res.status === 401) {
+            poll401CountRef.current += 1;
+            if (poll401CountRef.current >= 4) {
+              const data = (await res.json()) as { events?: ServerEvent[] };
+              if (!cancelled && Array.isArray(data.events)) {
+                for (const evt of data.events) {
+                  handleServerEventRef.current(evt);
+                }
               }
             }
           }
