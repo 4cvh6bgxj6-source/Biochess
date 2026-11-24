@@ -94,10 +94,33 @@ const store: PersistedStore = loadStore();
 // Active in-memory runtime state
 const socketsByUser = new Map<string, Set<WebSocket>>();
 const userBySocket = new Map<WebSocket, string>();
+const httpSessionsByUser = new Map<string, { queue: ServerEvent[]; lastPollAt: number }>();
 const games = new Map<string, GameState>();
 const activeGameByUser = new Map<string, string>();
 const challenges = new Map<string, Challenge>();
 const botMoveTimers = new Map<string, NodeJS.Timeout>();
+
+const HTTP_SESSION_TTL_MS = 15_000;
+
+function isHttpSessionAlive(userKey: string): boolean {
+  const s = httpSessionsByUser.get(userKey);
+  if (!s) return false;
+  return Date.now() - s.lastPollAt < HTTP_SESSION_TTL_MS;
+}
+
+function isUserOnline(userKey: string): boolean {
+  return (socketsByUser.get(userKey)?.size || 0) > 0 || isHttpSessionAlive(userKey);
+}
+
+function getConnectedUserKeys(): string[] {
+  const keys = new Set<string>(socketsByUser.keys());
+  for (const key of httpSessionsByUser.keys()) {
+    if (isHttpSessionAlive(key)) {
+      keys.add(key);
+    }
+  }
+  return Array.from(keys);
+}
 
 function makeId(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
@@ -157,16 +180,33 @@ function sendEvent(ws: WebSocket, event: ServerEvent) {
 
 function sendToUser(userKey: string, event: ServerEvent) {
   const set = socketsByUser.get(userKey);
-  if (!set) return;
-  for (const ws of set) {
-    sendEvent(ws, event);
+  if (set) {
+    for (const ws of set) {
+      sendEvent(ws, event);
+    }
+  }
+  const httpSess = httpSessionsByUser.get(userKey);
+  if (httpSess) {
+    if (event.type === 'clock:sync' || event.type === 'lobby:state') {
+      const idx = httpSess.queue.findIndex((e) => e.type === event.type);
+      if (idx >= 0) {
+        httpSess.queue[idx] = event;
+      } else {
+        httpSess.queue.push(event);
+      }
+    } else {
+      httpSess.queue.push(event);
+    }
+    if (httpSess.queue.length > 200) {
+      httpSess.queue.shift();
+    }
   }
 }
 
 function getPlayerSummary(userKey: string): PlayerSummary | null {
   const p = store.players[userKey];
   if (!p) return null;
-  const isOnline = (socketsByUser.get(userKey)?.size || 0) > 0;
+  const online = isUserOnline(userKey);
   const gameId = activeGameByUser.get(userKey) || null;
   const activeGame = gameId ? games.get(gameId) : null;
   const inGame = Boolean(activeGame && activeGame.status === 'active');
@@ -177,7 +217,7 @@ function getPlayerSummary(userKey: string): PlayerSummary | null {
     wins: p.wins,
     losses: p.losses,
     draws: p.draws,
-    status: !isOnline ? 'offline' : inGame ? 'in_game' : 'online',
+    status: !online ? 'offline' : inGame ? 'in_game' : 'online',
     activeGameId: inGame ? gameId : null,
   };
 }
@@ -192,7 +232,7 @@ function getLobbySnapshotFor(userKey: string) {
   }
 
   const onlinePlayers: PlayerSummary[] = [];
-  for (const key of socketsByUser.keys()) {
+  for (const key of getConnectedUserKeys()) {
     if (key === userKey) continue;
     const summary = getPlayerSummary(key);
     if (summary && summary.status !== 'offline') {
@@ -218,12 +258,12 @@ function getLobbySnapshotFor(userKey: string) {
     if (toKey === userKey) {
       incomingChallenges.push({
         ...ch,
-        targetOnline: socketsByUser.has(toKey),
+        targetOnline: isUserOnline(toKey),
       });
     } else if (fromKey === userKey) {
       outgoingChallenges.push({
         ...ch,
-        targetOnline: socketsByUser.has(toKey),
+        targetOnline: isUserOnline(toKey),
       });
     }
   }
@@ -239,7 +279,7 @@ function getLobbySnapshotFor(userKey: string) {
 }
 
 function broadcastLobbyToAll() {
-  for (const userKey of socketsByUser.keys()) {
+  for (const userKey of getConnectedUserKeys()) {
     sendToUser(userKey, getLobbySnapshotFor(userKey));
   }
 }
@@ -601,8 +641,615 @@ app.prepare().then(() => {
   const expressApp = express();
   const httpServer = createServer(expressApp);
 
+  const isReservedName = (key: string) =>
+    key === 'bot_cavallo' ||
+    key === 'bot_alfiere' ||
+    key === 'bot_re' ||
+    key === 'sistema' ||
+    key === 'biochess';
+
+  function buildAuthOkEvent(key: string): ServerEvent {
+    const profile = getPlayerSummary(key)!;
+    const activeGameId = activeGameByUser.get(key);
+    const activeGameObj = activeGameId ? games.get(activeGameId) : null;
+    const currentGame =
+      activeGameObj && activeGameObj.status === 'active' ? activeGameObj : null;
+
+    return {
+      type: 'auth:ok',
+      profile,
+      token: store.players[key].token,
+      activeGame: currentGame,
+    };
+  }
+
+  function processAuthMessage(
+    msg: ClientEvent,
+    reply: (evt: ServerEvent) => void
+  ): string | null {
+    if (msg.type === 'auth:register') {
+      if (typeof msg.username !== 'string' || !isValidPassword(msg.password)) {
+        reply({
+          type: 'auth:error',
+          message: 'Inserisci un username valido e una password di almeno 4 caratteri.',
+        });
+        return null;
+      }
+      const cleanName = msg.username.trim();
+      if (!isValidUsername(cleanName)) {
+        reply({
+          type: 'auth:error',
+          message: 'Username non valido: usa 2–20 caratteri (lettere, numeri o _).',
+        });
+        return null;
+      }
+      const key = normalizeKey(cleanName);
+      if (isReservedName(key) || store.players[key]) {
+        reply({
+          type: 'auth:error',
+          message: 'Nome già in uso.',
+        });
+        return null;
+      }
+
+      store.players[key] = {
+        username: cleanName,
+        key,
+        passwordHash: hashPassword(msg.password),
+        token: makeSessionToken(),
+        elo: 300,
+        wins: 0,
+        losses: 0,
+        draws: 0,
+        lastSeenAt: Date.now(),
+      };
+      return key;
+    }
+
+    if (msg.type === 'auth:login') {
+      if (typeof msg.username !== 'string' || typeof msg.password !== 'string') {
+        reply({
+          type: 'auth:error',
+          message: 'Username o password sbagliati.',
+        });
+        return null;
+      }
+      const cleanName = msg.username.trim();
+      const key = normalizeKey(cleanName);
+      const existing = store.players[key];
+
+      if (!cleanName || !existing || !verifyPassword(msg.password, existing.passwordHash)) {
+        reply({
+          type: 'auth:error',
+          message: 'Username o password sbagliati.',
+        });
+        return null;
+      }
+
+      existing.token = makeSessionToken();
+      existing.lastSeenAt = Date.now();
+      return key;
+    }
+
+    if (msg.type === 'auth:resume') {
+      if (typeof msg.username !== 'string' || typeof msg.token !== 'string') {
+        reply({ type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' });
+        return null;
+      }
+      const key = normalizeKey(msg.username);
+      const existing = store.players[key];
+      if (!existing || !verifyToken(msg.token, existing.token)) {
+        reply({ type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' });
+        return null;
+      }
+      existing.lastSeenAt = Date.now();
+      return key;
+    }
+
+    return null;
+  }
+
+  function handleAuthenticatedAction(
+    userKey: string,
+    msg: ClientEvent,
+    reply: (evt: ServerEvent) => void
+  ) {
+    const me = store.players[userKey];
+    if (!me) return;
+
+    if (msg.type === 'lobby:refresh') {
+      reply(getLobbySnapshotFor(userKey));
+      return;
+    }
+
+    if (msg.type === 'challenge:send') {
+      if (typeof msg.toUsername !== 'string') return;
+      const targetRaw = msg.toUsername.trim();
+      if (!isValidUsername(targetRaw)) {
+        reply({
+          type: 'challenge:error',
+          message: 'Inserisci un username valido (2–20 caratteri, lettere, numeri o _).',
+        });
+        return;
+      }
+      const targetKey = normalizeKey(targetRaw);
+      if (targetKey === userKey) {
+        reply({
+          type: 'challenge:error',
+          message: 'Non puoi sfidare te stesso.',
+        });
+        return;
+      }
+
+      const myActiveId = activeGameByUser.get(userKey);
+      const myActive = myActiveId ? games.get(myActiveId) : null;
+      if (myActive && myActive.status === 'active') {
+        reply({
+          type: 'challenge:error',
+          message: 'Completa o abbandona la partita in corso prima di inviare una nuova sfida.',
+        });
+        return;
+      }
+
+      for (const ch of challenges.values()) {
+        if (normalizeKey(ch.from) === userKey && normalizeKey(ch.to) === targetKey) {
+          reply({
+            type: 'challenge:error',
+            message: `Hai già una sfida attiva verso ${ch.to}.`,
+          });
+          return;
+        }
+      }
+
+      const targetOnline = isUserOnline(targetKey);
+      const displayTarget = store.players[targetKey]?.username || targetRaw;
+      const now = Date.now();
+      const challenge: Challenge = {
+        id: makeId('chal'),
+        from: me.username,
+        fromElo: me.elo,
+        to: displayTarget,
+        timeControl: msg.timeControl,
+        colorPref: msg.colorPref,
+        createdAt: now,
+        expiresAt: now + (targetOnline ? 90 * 1000 : 15 * 60 * 1000),
+        targetOnline,
+      };
+      challenges.set(challenge.id, challenge);
+
+      reply({ type: 'challenge:sent', challenge });
+      if (targetOnline) {
+        sendToUser(targetKey, { type: 'challenge:received', challenge });
+      }
+      broadcastLobbyToAll();
+      return;
+    }
+
+    if (msg.type === 'challenge:cancel') {
+      if (typeof msg.challengeId !== 'string') return;
+      const ch = challenges.get(msg.challengeId);
+      if (!ch || normalizeKey(ch.from) !== userKey) return;
+      challenges.delete(msg.challengeId);
+      sendToUser(userKey, { type: 'challenge:removed', challengeId: ch.id });
+      sendToUser(normalizeKey(ch.to), { type: 'challenge:removed', challengeId: ch.id });
+      broadcastLobbyToAll();
+      return;
+    }
+
+    if (msg.type === 'challenge:respond') {
+      if (typeof msg.challengeId !== 'string') return;
+      const ch = challenges.get(msg.challengeId);
+      if (!ch) {
+        reply({ type: 'challenge:error', message: 'La sfida non è più disponibile.' });
+        return;
+      }
+      if (normalizeKey(ch.to) !== userKey) return;
+
+      challenges.delete(ch.id);
+      const fromKey = normalizeKey(ch.from);
+
+      if (!msg.accept) {
+        sendToUser(fromKey, {
+          type: 'challenge:removed',
+          challengeId: ch.id,
+          reason: `${me.username} ha rifiutato la sfida.`,
+        });
+        sendToUser(userKey, { type: 'challenge:removed', challengeId: ch.id });
+        broadcastLobbyToAll();
+        return;
+      }
+
+      if (!isUserOnline(fromKey) || !store.players[fromKey]) {
+        reply({
+          type: 'challenge:error',
+          message: `${ch.from} non è più connesso in questo momento.`,
+        });
+        broadcastLobbyToAll();
+        return;
+      }
+
+      const challenger = store.players[fromKey];
+      const challengerPlaysWhite =
+        ch.colorPref === 'w'
+          ? true
+          : ch.colorPref === 'b'
+            ? false
+            : Math.random() < 0.5;
+
+      const whiteInfo: GameState['white'] = challengerPlaysWhite
+        ? { username: challenger.username, elo: challenger.elo, isBot: false }
+        : { username: me.username, elo: me.elo, isBot: false };
+
+      const blackInfo: GameState['black'] = challengerPlaysWhite
+        ? { username: me.username, elo: me.elo, isBot: false }
+        : { username: challenger.username, elo: challenger.elo, isBot: false };
+
+      const game = createChessMatch({
+        white: whiteInfo,
+        black: blackInfo,
+        timeControl: ch.timeControl,
+        isBotGame: false,
+      });
+
+      sendToUser(fromKey, { type: 'challenge:removed', challengeId: ch.id });
+      sendToUser(userKey, { type: 'challenge:removed', challengeId: ch.id });
+      broadcastGame(game, 'game:started');
+      broadcastLobbyToAll();
+      return;
+    }
+
+    if (msg.type === 'bot:start') {
+      const bot = BOT_DEFINITIONS[msg.botId];
+      if (!bot) return;
+
+      const playerPlaysWhite =
+        msg.colorPref === 'w'
+          ? true
+          : msg.colorPref === 'b'
+            ? false
+            : Math.random() < 0.5;
+
+      const whiteInfo: GameState['white'] = playerPlaysWhite
+        ? { username: me.username, elo: me.elo, isBot: false }
+        : { username: bot.name, elo: bot.elo, isBot: true, botId: bot.id };
+
+      const blackInfo: GameState['black'] = playerPlaysWhite
+        ? { username: bot.name, elo: bot.elo, isBot: true, botId: bot.id }
+        : { username: me.username, elo: me.elo, isBot: false };
+
+      const game = createChessMatch({
+        white: whiteInfo,
+        black: blackInfo,
+        timeControl: msg.timeControl,
+        isBotGame: true,
+        botId: bot.id,
+      });
+
+      broadcastGame(game, 'game:started');
+      broadcastLobbyToAll();
+      scheduleBotTurn(game);
+      return;
+    }
+
+    if (msg.type === 'game:move') {
+      if (typeof msg.gameId !== 'string' || typeof msg.from !== 'string' || typeof msg.to !== 'string') {
+        return;
+      }
+      const game = games.get(msg.gameId);
+      if (!game) return;
+      const myColor = getParticipantColor(game, userKey);
+      if (!myColor || game.turn !== myColor) {
+        reply({ type: 'game:error', message: 'Non è il tuo turno.' });
+        return;
+      }
+
+      const result = applyMoveOnGame(game, msg.from, msg.to, msg.promotion);
+      if (!result.ok) {
+        reply({ type: 'game:error', message: result.error });
+        return;
+      }
+
+      if (game.isBotGame && game.botId) {
+        if (result.newStatus === 'checkmate') {
+          const chatMsg = appendBotChat(
+            game,
+            game.botId,
+            getBotMoveComment(game.botId, 'checkmate_loss') || 'Bella partita!'
+          );
+          broadcastGameChat(game, chatMsg);
+        } else if (result.newStatus === 'active') {
+          const qualityReaction = getBotQualityReaction(game.botId, result.quality);
+          if (qualityReaction) {
+            const chatMsg = appendBotChat(game, game.botId, qualityReaction);
+            broadcastGameChat(game, chatMsg);
+          } else if (result.captured === 'q') {
+            const chatMsg = appendBotChat(
+              game,
+              game.botId,
+              getBotMoveComment(game.botId, 'capture_queen') || ''
+            );
+            if (chatMsg.text) broadcastGameChat(game, chatMsg);
+          } else if (result.inCheck && Math.random() < 0.5) {
+            const chatMsg = appendBotChat(
+              game,
+              game.botId,
+              getBotMoveComment(game.botId, 'bot_checked') || ''
+            );
+            if (chatMsg.text) broadcastGameChat(game, chatMsg);
+          }
+          scheduleBotTurn(game);
+        }
+      }
+      return;
+    }
+
+    if (msg.type === 'game:chat') {
+      if (typeof msg.gameId !== 'string' || typeof msg.text !== 'string') return;
+      const game = games.get(msg.gameId);
+      if (!game) return;
+      const myColor = getParticipantColor(game, userKey);
+      if (!myColor) return;
+
+      const cleanText = msg.text.replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (!cleanText) return;
+
+      const chatMsg: ChatMessage = {
+        id: makeId('msg'),
+        sender: me.username,
+        text: cleanText,
+        timestamp: Date.now(),
+        kind: 'player',
+      };
+      game.chat.push(chatMsg);
+      if (game.chat.length > 200) game.chat.shift();
+      broadcastGameChat(game, chatMsg);
+
+      if (game.isBotGame && game.botId) {
+        const botId = game.botId;
+        const botColor: PieceColor = game.white.isBot ? 'w' : 'b';
+        const replyText = getBotChatReply(
+          botId,
+          cleanText,
+          game.fen,
+          botColor,
+          game.moves.length
+        );
+        setTimeout(() => {
+          const botMsg = appendBotChat(game, botId, replyText);
+          broadcastGameChat(game, botMsg);
+        }, 450);
+      }
+      return;
+    }
+
+    if (msg.type === 'game:resign') {
+      if (typeof msg.gameId !== 'string') return;
+      const game = games.get(msg.gameId);
+      if (!game || game.status !== 'active') return;
+      const myColor = getParticipantColor(game, userKey);
+      if (!myColor) return;
+      const winner: PieceColor = myColor === 'w' ? 'b' : 'w';
+      finalizeGame(game, 'resigned', winner, `${me.username} ha abbandonato la partita.`);
+      return;
+    }
+
+    if (msg.type === 'game:offer_draw') {
+      if (typeof msg.gameId !== 'string') return;
+      const game = games.get(msg.gameId);
+      if (!game || game.status !== 'active') return;
+      const myColor = getParticipantColor(game, userKey);
+      if (!myColor || game.drawOfferBy === myColor) return;
+
+      if (game.isBotGame && game.botId) {
+        const sys = appendSystemChat(game, `${me.username} propone la patta.`);
+        broadcastGameChat(game, sys);
+        const chess = new Chess(game.fen);
+        const canDraw = game.moves.length >= 24 && !chess.inCheck();
+        const botId = game.botId;
+        setTimeout(() => {
+          if (game.status !== 'active') return;
+          if (canDraw && botId === 'knight') {
+            const botMsg = appendBotChat(game, botId, 'Va bene, accettiamo la patta! Bella partita.');
+            broadcastGameChat(game, botMsg);
+            finalizeGame(game, 'draw', 'draw', 'Patta concordata.');
+          } else {
+            const botMsg = appendBotChat(game, botId, 'Continuiamo a giocare, c’è ancora molto sulla scacchiera.');
+            broadcastGameChat(game, botMsg);
+          }
+        }, 500);
+        return;
+      }
+
+      game.drawOfferBy = myColor;
+      const sys = appendSystemChat(game, `${me.username} ha proposto la patta.`);
+      broadcastGame(game, 'game:updated');
+      broadcastGameChat(game, sys);
+      return;
+    }
+
+    if (msg.type === 'game:respond_draw') {
+      if (typeof msg.gameId !== 'string') return;
+      const game = games.get(msg.gameId);
+      if (!game || game.status !== 'active') return;
+      const myColor = getParticipantColor(game, userKey);
+      if (!myColor || !game.drawOfferBy || game.drawOfferBy === myColor) return;
+
+      if (msg.accept) {
+        finalizeGame(game, 'draw', 'draw', 'Patta concordata tra i giocatori.');
+      } else {
+        game.drawOfferBy = null;
+        const sys = appendSystemChat(game, `${me.username} ha rifiutato la patta.`);
+        broadcastGame(game, 'game:updated');
+        broadcastGameChat(game, sys);
+      }
+      return;
+    }
+
+    if (msg.type === 'game:rematch') {
+      if (typeof msg.gameId !== 'string') return;
+      const game = games.get(msg.gameId);
+      if (!game || game.status === 'active') return;
+      const myColor = getParticipantColor(game, userKey);
+      if (!myColor) return;
+
+      if (game.isBotGame && game.botId) {
+        const newGame = createChessMatch({
+          white: game.black,
+          black: game.white,
+          timeControl: game.timeControl,
+          isBotGame: true,
+          botId: game.botId,
+        });
+        broadcastGame(newGame, 'game:started');
+        broadcastLobbyToAll();
+        scheduleBotTurn(newGame);
+        return;
+      }
+
+      if (game.rematchRequestedBy && game.rematchRequestedBy !== myColor) {
+        const wKey = normalizeKey(game.white.username);
+        const bKey = normalizeKey(game.black.username);
+        if (!isUserOnline(wKey) || !isUserOnline(bKey)) {
+          reply({ type: 'game:error', message: 'L’avversario non è più connesso.' });
+          return;
+        }
+        const newGame = createChessMatch({
+          white: game.black,
+          black: game.white,
+          timeControl: game.timeControl,
+          isBotGame: false,
+        });
+        broadcastGame(newGame, 'game:started');
+        broadcastLobbyToAll();
+      } else {
+        game.rematchRequestedBy = myColor;
+        const sys = appendSystemChat(game, `${me.username} chiede la rivincita.`);
+        broadcastGame(game, 'game:updated');
+        broadcastGameChat(game, sys);
+      }
+      return;
+    }
+
+    if (msg.type === 'game:leave_view') {
+      const currentId = activeGameByUser.get(userKey);
+      if (currentId) {
+        const g = games.get(currentId);
+        if (!g || g.status !== 'active') {
+          activeGameByUser.delete(userKey);
+          broadcastLobbyToAll();
+        }
+      }
+    }
+  }
+
+  function verifyHttpBearerUser(req: express.Request): string | null {
+    const authHeader = req.headers.authorization;
+    const rawUser = req.headers['x-biochess-user'];
+    if (typeof authHeader !== 'string' || typeof rawUser !== 'string') return null;
+    if (!authHeader.startsWith('Bearer ')) return null;
+    const token = authHeader.slice(7).trim();
+    const key = normalizeKey(rawUser);
+    const player = store.players[key];
+    if (!player || !verifyToken(token, player.token)) return null;
+    return key;
+  }
+
   expressApp.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', onlinePlayers: socketsByUser.size, activeGames: games.size });
+    res.json({
+      status: 'ok',
+      onlinePlayers: getConnectedUserKeys().length,
+      activeGames: games.size,
+    });
+  });
+
+  expressApp.post('/api/rpc', express.json({ limit: '64kb' }), (req, res) => {
+    const msg = req.body as ClientEvent;
+    if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') {
+      res.status(400).json({ events: [] });
+      return;
+    }
+
+    const directEvents: ServerEvent[] = [];
+
+    if (
+      msg.type === 'auth:register' ||
+      msg.type === 'auth:login' ||
+      msg.type === 'auth:resume'
+    ) {
+      const authKey = processAuthMessage(msg, (evt) => directEvents.push(evt));
+      if (!authKey) {
+        res.json({ events: directEvents });
+        return;
+      }
+
+      httpSessionsByUser.set(authKey, { queue: [], lastPollAt: Date.now() });
+      scheduleSave();
+      directEvents.push(buildAuthOkEvent(authKey));
+      broadcastLobbyToAll();
+
+      const sess = httpSessionsByUser.get(authKey);
+      if (sess && sess.queue.length > 0) {
+        directEvents.push(...sess.queue.splice(0));
+      }
+      res.json({ events: directEvents });
+      return;
+    }
+
+    const userKey = verifyHttpBearerUser(req);
+    if (!userKey) {
+      res.status(401).json({
+        events: [{ type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' }],
+      });
+      return;
+    }
+
+    const me = store.players[userKey];
+    if (msg.type === 'auth:logout') {
+      me.token = '';
+      scheduleSave();
+      httpSessionsByUser.delete(userKey);
+      broadcastLobbyToAll();
+      res.json({ events: [] });
+      return;
+    }
+
+    let sess = httpSessionsByUser.get(userKey);
+    if (!sess) {
+      sess = { queue: [], lastPollAt: Date.now() };
+      httpSessionsByUser.set(userKey, sess);
+    } else {
+      sess.lastPollAt = Date.now();
+    }
+
+    handleAuthenticatedAction(userKey, msg, (evt) => directEvents.push(evt));
+
+    if (sess.queue.length > 0) {
+      directEvents.push(...sess.queue.splice(0));
+    }
+
+    res.json({ events: directEvents });
+  });
+
+  expressApp.get('/api/poll', (req, res) => {
+    const userKey = verifyHttpBearerUser(req);
+    if (!userKey) {
+      res.status(401).json({
+        events: [{ type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' }],
+      });
+      return;
+    }
+
+    let sess = httpSessionsByUser.get(userKey);
+    if (!sess) {
+      sess = { queue: [], lastPollAt: Date.now() };
+      httpSessionsByUser.set(userKey, sess);
+      broadcastLobbyToAll();
+    } else {
+      sess.lastPollAt = Date.now();
+    }
+
+    const events = sess.queue.splice(0);
+    res.json({ events });
   });
 
   expressApp.all(/.*/, (req, res) => {
@@ -623,9 +1270,20 @@ app.prepare().then(() => {
     }
   });
 
-  // Periodic server clock sync & timeout enforcement
+  // Periodic server clock sync, timeout enforcement, and stale HTTP poll cleanup
   setInterval(() => {
     const now = Date.now();
+    let prunedHttp = false;
+    for (const [key, sess] of httpSessionsByUser.entries()) {
+      if (now - sess.lastPollAt >= HTTP_SESSION_TTL_MS) {
+        httpSessionsByUser.delete(key);
+        prunedHttp = true;
+      }
+    }
+    if (prunedHttp) {
+      broadcastLobbyToAll();
+    }
+
     for (const game of games.values()) {
       if (game.status !== 'active' || game.timeControl === 'unlimited') continue;
       if (game.moves.length < 1) continue;
@@ -667,7 +1325,16 @@ app.prepare().then(() => {
         return;
       }
 
-      const attachAuthenticatedSocket = (key: string) => {
+      if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return;
+
+      if (
+        msg.type === 'auth:register' ||
+        msg.type === 'auth:login' ||
+        msg.type === 'auth:resume'
+      ) {
+        const key = processAuthMessage(msg, (evt) => sendEvent(ws, evt));
+        if (!key) return;
+
         const prevUser = userBySocket.get(ws);
         if (prevUser && prevUser !== key) {
           socketsByUser.get(prevUser)?.delete(ws);
@@ -683,111 +1350,8 @@ app.prepare().then(() => {
         socketsByUser.get(key)!.add(ws);
 
         scheduleSave();
-
-        const profile = getPlayerSummary(key)!;
-        const activeGameId = activeGameByUser.get(key);
-        const activeGameObj = activeGameId ? games.get(activeGameId) : null;
-        const currentGame =
-          activeGameObj && activeGameObj.status === 'active' ? activeGameObj : null;
-
-        sendEvent(ws, {
-          type: 'auth:ok',
-          profile,
-          token: store.players[key].token,
-          activeGame: currentGame,
-        });
-
+        sendEvent(ws, buildAuthOkEvent(key));
         broadcastLobbyToAll();
-      };
-
-      const isReservedName = (key: string) =>
-        key === 'bot_cavallo' ||
-        key === 'bot_alfiere' ||
-        key === 'bot_re' ||
-        key === 'sistema' ||
-        key === 'biochess';
-
-      if (msg.type === 'auth:register') {
-        if (typeof msg.username !== 'string' || !isValidPassword(msg.password)) {
-          sendEvent(ws, {
-            type: 'auth:error',
-            message: 'Inserisci un username valido e una password di almeno 4 caratteri.',
-          });
-          return;
-        }
-        const cleanName = msg.username.trim();
-        if (!isValidUsername(cleanName)) {
-          sendEvent(ws, {
-            type: 'auth:error',
-            message: 'Username non valido: usa 2–20 caratteri (lettere, numeri o _).',
-          });
-          return;
-        }
-        const key = normalizeKey(cleanName);
-        if (isReservedName(key) || store.players[key]) {
-          sendEvent(ws, {
-            type: 'auth:error',
-            message: 'Nome già in uso.',
-          });
-          return;
-        }
-
-        store.players[key] = {
-          username: cleanName,
-          key,
-          passwordHash: hashPassword(msg.password),
-          token: makeSessionToken(),
-          elo: 300,
-          wins: 0,
-          losses: 0,
-          draws: 0,
-          lastSeenAt: Date.now(),
-        };
-
-        attachAuthenticatedSocket(key);
-        return;
-      }
-
-      if (msg.type === 'auth:login') {
-        if (typeof msg.username !== 'string' || typeof msg.password !== 'string') {
-          sendEvent(ws, {
-            type: 'auth:error',
-            message: 'Username o password sbagliati.',
-          });
-          return;
-        }
-        const cleanName = msg.username.trim();
-        const key = normalizeKey(cleanName);
-        const existing = store.players[key];
-
-        if (!cleanName || !existing || !verifyPassword(msg.password, existing.passwordHash)) {
-          sendEvent(ws, {
-            type: 'auth:error',
-            message: 'Username o password sbagliati.',
-          });
-          return;
-        }
-
-        // Rotate session token on fresh password login
-        existing.token = makeSessionToken();
-        existing.lastSeenAt = Date.now();
-        attachAuthenticatedSocket(key);
-        return;
-      }
-
-      if (msg.type === 'auth:resume') {
-        if (typeof msg.username !== 'string' || typeof msg.token !== 'string') {
-          sendEvent(ws, { type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' });
-          return;
-        }
-        const key = normalizeKey(msg.username);
-        const existing = store.players[key];
-        if (!existing || !verifyToken(msg.token, existing.token)) {
-          sendEvent(ws, { type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' });
-          return;
-        }
-        existing.lastSeenAt = Date.now();
-        attachAuthenticatedSocket(key);
         return;
       }
 
@@ -810,382 +1374,7 @@ app.prepare().then(() => {
         return;
       }
 
-      if (msg.type === 'lobby:refresh') {
-        sendEvent(ws, getLobbySnapshotFor(userKey));
-        return;
-      }
-
-      if (msg.type === 'challenge:send') {
-        const targetRaw = msg.toUsername.trim();
-        if (!isValidUsername(targetRaw)) {
-          sendEvent(ws, {
-            type: 'challenge:error',
-            message: 'Inserisci un username valido (2–20 caratteri, lettere, numeri o _).',
-          });
-          return;
-        }
-        const targetKey = normalizeKey(targetRaw);
-        if (targetKey === userKey) {
-          sendEvent(ws, {
-            type: 'challenge:error',
-            message: 'Non puoi sfidare te stesso.',
-          });
-          return;
-        }
-
-        // Check if user already has an active game
-        const myActiveId = activeGameByUser.get(userKey);
-        const myActive = myActiveId ? games.get(myActiveId) : null;
-        if (myActive && myActive.status === 'active') {
-          sendEvent(ws, {
-            type: 'challenge:error',
-            message: 'Completa o abbandona la partita in corso prima di inviare una nuova sfida.',
-          });
-          return;
-        }
-
-        // Prevent duplicate pending challenge to same player
-        for (const ch of challenges.values()) {
-          if (normalizeKey(ch.from) === userKey && normalizeKey(ch.to) === targetKey) {
-            sendEvent(ws, {
-              type: 'challenge:error',
-              message: `Hai già una sfida attiva verso ${ch.to}.`,
-            });
-            return;
-          }
-        }
-
-        const targetOnline = socketsByUser.has(targetKey);
-        const displayTarget = store.players[targetKey]?.username || targetRaw;
-        const now = Date.now();
-        const challenge: Challenge = {
-          id: makeId('chal'),
-          from: me.username,
-          fromElo: me.elo,
-          to: displayTarget,
-          timeControl: msg.timeControl,
-          colorPref: msg.colorPref,
-          createdAt: now,
-          // 90s if target is online right now, 15 minutes if queued for when they connect
-          expiresAt: now + (targetOnline ? 90 * 1000 : 15 * 60 * 1000),
-          targetOnline,
-        };
-        challenges.set(challenge.id, challenge);
-
-        sendEvent(ws, { type: 'challenge:sent', challenge });
-        if (targetOnline) {
-          sendToUser(targetKey, { type: 'challenge:received', challenge });
-        }
-        broadcastLobbyToAll();
-        return;
-      }
-
-      if (msg.type === 'challenge:cancel') {
-        const ch = challenges.get(msg.challengeId);
-        if (!ch || normalizeKey(ch.from) !== userKey) return;
-        challenges.delete(msg.challengeId);
-        sendToUser(userKey, { type: 'challenge:removed', challengeId: ch.id });
-        sendToUser(normalizeKey(ch.to), { type: 'challenge:removed', challengeId: ch.id });
-        broadcastLobbyToAll();
-        return;
-      }
-
-      if (msg.type === 'challenge:respond') {
-        const ch = challenges.get(msg.challengeId);
-        if (!ch) {
-          sendEvent(ws, { type: 'challenge:error', message: 'La sfida non è più disponibile.' });
-          return;
-        }
-        if (normalizeKey(ch.to) !== userKey) return;
-
-        challenges.delete(ch.id);
-        const fromKey = normalizeKey(ch.from);
-
-        if (!msg.accept) {
-          sendToUser(fromKey, {
-            type: 'challenge:removed',
-            challengeId: ch.id,
-            reason: `${me.username} ha rifiutato la sfida.`,
-          });
-          sendToUser(userKey, { type: 'challenge:removed', challengeId: ch.id });
-          broadcastLobbyToAll();
-          return;
-        }
-
-        if (!socketsByUser.has(fromKey) || !store.players[fromKey]) {
-          sendEvent(ws, {
-            type: 'challenge:error',
-            message: `${ch.from} non è più connesso in questo momento.`,
-          });
-          broadcastLobbyToAll();
-          return;
-        }
-
-        const challenger = store.players[fromKey];
-        const challengerPlaysWhite =
-          ch.colorPref === 'w'
-            ? true
-            : ch.colorPref === 'b'
-              ? false
-              : Math.random() < 0.5;
-
-        const whiteInfo: GameState['white'] = challengerPlaysWhite
-          ? { username: challenger.username, elo: challenger.elo, isBot: false }
-          : { username: me.username, elo: me.elo, isBot: false };
-
-        const blackInfo: GameState['black'] = challengerPlaysWhite
-          ? { username: me.username, elo: me.elo, isBot: false }
-          : { username: challenger.username, elo: challenger.elo, isBot: false };
-
-        const game = createChessMatch({
-          white: whiteInfo,
-          black: blackInfo,
-          timeControl: ch.timeControl,
-          isBotGame: false,
-        });
-
-        sendToUser(fromKey, { type: 'challenge:removed', challengeId: ch.id });
-        sendToUser(userKey, { type: 'challenge:removed', challengeId: ch.id });
-        broadcastGame(game, 'game:started');
-        broadcastLobbyToAll();
-        return;
-      }
-
-      if (msg.type === 'bot:start') {
-        const bot = BOT_DEFINITIONS[msg.botId];
-        if (!bot) return;
-
-        const playerPlaysWhite =
-          msg.colorPref === 'w'
-            ? true
-            : msg.colorPref === 'b'
-              ? false
-              : Math.random() < 0.5;
-
-        const whiteInfo: GameState['white'] = playerPlaysWhite
-          ? { username: me.username, elo: me.elo, isBot: false }
-          : { username: bot.name, elo: bot.elo, isBot: true, botId: bot.id };
-
-        const blackInfo: GameState['black'] = playerPlaysWhite
-          ? { username: bot.name, elo: bot.elo, isBot: true, botId: bot.id }
-          : { username: me.username, elo: me.elo, isBot: false };
-
-        const game = createChessMatch({
-          white: whiteInfo,
-          black: blackInfo,
-          timeControl: msg.timeControl,
-          isBotGame: true,
-          botId: bot.id,
-        });
-
-        broadcastGame(game, 'game:started');
-        broadcastLobbyToAll();
-        scheduleBotTurn(game);
-        return;
-      }
-
-      if (msg.type === 'game:move') {
-        const game = games.get(msg.gameId);
-        if (!game) return;
-        const myColor = getParticipantColor(game, userKey);
-        if (!myColor || game.turn !== myColor) {
-          sendEvent(ws, { type: 'game:error', message: 'Non è il tuo turno.' });
-          return;
-        }
-
-        const result = applyMoveOnGame(game, msg.from, msg.to, msg.promotion);
-        if (!result.ok) {
-          sendEvent(ws, { type: 'game:error', message: result.error });
-          return;
-        }
-
-        if (game.isBotGame && game.botId) {
-          if (result.newStatus === 'checkmate') {
-            const chatMsg = appendBotChat(
-              game,
-              game.botId,
-              getBotMoveComment(game.botId, 'checkmate_loss') || 'Bella partita!'
-            );
-            broadcastGameChat(game, chatMsg);
-          } else if (result.newStatus === 'active') {
-            const qualityReaction = getBotQualityReaction(game.botId, result.quality);
-            if (qualityReaction) {
-              const chatMsg = appendBotChat(game, game.botId, qualityReaction);
-              broadcastGameChat(game, chatMsg);
-            } else if (result.captured === 'q') {
-              const chatMsg = appendBotChat(
-                game,
-                game.botId,
-                getBotMoveComment(game.botId, 'capture_queen') || ''
-              );
-              if (chatMsg.text) broadcastGameChat(game, chatMsg);
-            } else if (result.inCheck && Math.random() < 0.5) {
-              const chatMsg = appendBotChat(
-                game,
-                game.botId,
-                getBotMoveComment(game.botId, 'bot_checked') || ''
-              );
-              if (chatMsg.text) broadcastGameChat(game, chatMsg);
-            }
-            scheduleBotTurn(game);
-          }
-        }
-        return;
-      }
-
-      if (msg.type === 'game:chat') {
-        const game = games.get(msg.gameId);
-        if (!game) return;
-        const myColor = getParticipantColor(game, userKey);
-        if (!myColor) return;
-
-        const cleanText = msg.text.replace(/\s+/g, ' ').trim().slice(0, 400);
-        if (!cleanText) return;
-
-        const chatMsg: ChatMessage = {
-          id: makeId('msg'),
-          sender: me.username,
-          text: cleanText,
-          timestamp: Date.now(),
-          kind: 'player',
-        };
-        game.chat.push(chatMsg);
-        if (game.chat.length > 200) game.chat.shift();
-        broadcastGameChat(game, chatMsg);
-
-        if (game.isBotGame && game.botId) {
-          const botId = game.botId;
-          const botColor: PieceColor = game.white.isBot ? 'w' : 'b';
-          const reply = getBotChatReply(
-            botId,
-            cleanText,
-            game.fen,
-            botColor,
-            game.moves.length
-          );
-          setTimeout(() => {
-            const botMsg = appendBotChat(game, botId, reply);
-            broadcastGameChat(game, botMsg);
-          }, 450);
-        }
-        return;
-      }
-
-      if (msg.type === 'game:resign') {
-        const game = games.get(msg.gameId);
-        if (!game || game.status !== 'active') return;
-        const myColor = getParticipantColor(game, userKey);
-        if (!myColor) return;
-        const winner: PieceColor = myColor === 'w' ? 'b' : 'w';
-        finalizeGame(game, 'resigned', winner, `${me.username} ha abbandonato la partita.`);
-        return;
-      }
-
-      if (msg.type === 'game:offer_draw') {
-        const game = games.get(msg.gameId);
-        if (!game || game.status !== 'active') return;
-        const myColor = getParticipantColor(game, userKey);
-        if (!myColor || game.drawOfferBy === myColor) return;
-
-        if (game.isBotGame && game.botId) {
-          const sys = appendSystemChat(game, `${me.username} propone la patta.`);
-          broadcastGameChat(game, sys);
-          const chess = new Chess(game.fen);
-          const canDraw = game.moves.length >= 24 && !chess.inCheck();
-          const botId = game.botId;
-          setTimeout(() => {
-            if (game.status !== 'active') return;
-            if (canDraw && botId === 'knight') {
-              const botMsg = appendBotChat(game, botId, 'Va bene, accettiamo la patta! Bella partita.');
-              broadcastGameChat(game, botMsg);
-              finalizeGame(game, 'draw', 'draw', 'Patta concordata.');
-            } else {
-              const botMsg = appendBotChat(game, botId, 'Continuiamo a giocare, c’è ancora molto sulla scacchiera.');
-              broadcastGameChat(game, botMsg);
-            }
-          }, 500);
-          return;
-        }
-
-        game.drawOfferBy = myColor;
-        const sys = appendSystemChat(game, `${me.username} ha proposto la patta.`);
-        broadcastGame(game, 'game:updated');
-        broadcastGameChat(game, sys);
-        return;
-      }
-
-      if (msg.type === 'game:respond_draw') {
-        const game = games.get(msg.gameId);
-        if (!game || game.status !== 'active') return;
-        const myColor = getParticipantColor(game, userKey);
-        if (!myColor || !game.drawOfferBy || game.drawOfferBy === myColor) return;
-
-        if (msg.accept) {
-          finalizeGame(game, 'draw', 'draw', 'Patta concordata tra i giocatori.');
-        } else {
-          game.drawOfferBy = null;
-          const sys = appendSystemChat(game, `${me.username} ha rifiutato la patta.`);
-          broadcastGame(game, 'game:updated');
-          broadcastGameChat(game, sys);
-        }
-        return;
-      }
-
-      if (msg.type === 'game:rematch') {
-        const game = games.get(msg.gameId);
-        if (!game || game.status === 'active') return;
-        const myColor = getParticipantColor(game, userKey);
-        if (!myColor) return;
-
-        if (game.isBotGame && game.botId) {
-          const newGame = createChessMatch({
-            white: game.black,
-            black: game.white,
-            timeControl: game.timeControl,
-            isBotGame: true,
-            botId: game.botId,
-          });
-          broadcastGame(newGame, 'game:started');
-          broadcastLobbyToAll();
-          scheduleBotTurn(newGame);
-          return;
-        }
-
-        if (game.rematchRequestedBy && game.rematchRequestedBy !== myColor) {
-          const wKey = normalizeKey(game.white.username);
-          const bKey = normalizeKey(game.black.username);
-          if (!socketsByUser.has(wKey) || !socketsByUser.has(bKey)) {
-            sendEvent(ws, { type: 'game:error', message: 'L’avversario non è più connesso.' });
-            return;
-          }
-          const newGame = createChessMatch({
-            white: game.black,
-            black: game.white,
-            timeControl: game.timeControl,
-            isBotGame: false,
-          });
-          broadcastGame(newGame, 'game:started');
-          broadcastLobbyToAll();
-        } else {
-          game.rematchRequestedBy = myColor;
-          const sys = appendSystemChat(game, `${me.username} chiede la rivincita.`);
-          broadcastGame(game, 'game:updated');
-          broadcastGameChat(game, sys);
-        }
-        return;
-      }
-
-      if (msg.type === 'game:leave_view') {
-        const currentId = activeGameByUser.get(userKey);
-        if (currentId) {
-          const g = games.get(currentId);
-          if (!g || g.status !== 'active') {
-            activeGameByUser.delete(userKey);
-            broadcastLobbyToAll();
-          }
-        }
-        return;
-      }
+      handleAuthenticatedAction(userKey, msg, (evt) => sendEvent(ws, evt));
     });
 
     ws.on('close', () => {

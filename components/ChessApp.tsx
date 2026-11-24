@@ -29,8 +29,10 @@ export function ChessApp() {
   const activeGameIdRef = useRef<string | null>(null);
   const myUsernameRef = useRef<string | null>(null);
   const sessionTokenRef = useRef<string | null>(null);
+  const transportModeRef = useRef<'ws' | 'http'>('ws');
 
   const [wsReady, setWsReady] = useState(false);
+  const [transportMode, setTransportMode] = useState<'ws' | 'http'>('ws');
   const [connecting, setConnecting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [challengeError, setChallengeError] = useState<string | null>(null);
@@ -59,11 +61,40 @@ export function ChessApp() {
     myUsernameRef.current = profile?.username || null;
   }, [profile?.username]);
 
+  const handleServerEventRef = useRef<(evt: ServerEvent) => void>(() => {});
+
   const sendWs = useCallback((event: ClientEvent) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (transportModeRef.current === 'ws' && ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(event));
+      return;
     }
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (myUsernameRef.current && sessionTokenRef.current) {
+      headers.Authorization = `Bearer ${sessionTokenRef.current}`;
+      headers['x-biochess-user'] = myUsernameRef.current;
+    }
+
+    fetch('/api/rpc', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(event),
+    })
+      .then(async (res) => {
+        if (!res.ok && res.status !== 401) return;
+        const data = (await res.json()) as { events?: ServerEvent[] };
+        if (Array.isArray(data.events)) {
+          for (const evt of data.events) {
+            handleServerEventRef.current(evt);
+          }
+        }
+      })
+      .catch(() => {
+        setConnecting(false);
+      });
   }, []);
 
   const handleServerEvent = useCallback((evt: ServerEvent) => {
@@ -198,25 +229,80 @@ export function ChessApp() {
   }, [sendWs]);
 
   useEffect(() => {
-    let unmounted = false;
+    handleServerEventRef.current = handleServerEvent;
+  }, [handleServerEvent]);
 
-    function connect() {
+  useEffect(() => {
+    let unmounted = false;
+    let switchedToHttp = false;
+    let fallbackTimer: NodeJS.Timeout | null = null;
+
+    const params = new URLSearchParams(window.location.search);
+    const sfida = params.get('sfida');
+    if (sfida) {
+      queueMicrotask(() => {
+        if (!unmounted) setInviteTarget(sfida);
+      });
+    }
+
+    async function activateHttpFallback() {
       if (unmounted) return;
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      switchedToHttp = true;
+      if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+        try {
+          wsRef.current.close();
+        } catch {
+          // ignore
+        }
+      }
+      try {
+        const res = await fetch('/api/health', { cache: 'no-store' });
+        if (!unmounted && res.ok) {
+          transportModeRef.current = 'http';
+          setTransportMode('http');
+          setWsReady(true);
+          return;
+        }
+      } catch {
+        // retry shortly
+      }
+      if (!unmounted) {
+        reconnectTimerRef.current = setTimeout(activateHttpFallback, 1200);
+      }
+    }
+
+    function connectWs() {
+      if (unmounted) return;
+      let ws: WebSocket;
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+      } catch {
+        void activateHttpFallback();
+        return;
+      }
+
       wsRef.current = ws;
+      let opened = false;
+
+      // If WebSocket doesn't open within 900ms (e.g. blocked by iframe/proxy), switch cleanly to HTTP
+      fallbackTimer = setTimeout(() => {
+        if (!opened && !unmounted) {
+          void activateHttpFallback();
+        }
+      }, 900);
 
       ws.onopen = () => {
-        if (unmounted) {
+        opened = true;
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        if (unmounted || switchedToHttp) {
           ws.close();
           return;
         }
+        transportModeRef.current = 'ws';
+        setTransportMode('ws');
         setWsReady(true);
-        const params = new URLSearchParams(window.location.search);
-        const sfida = params.get('sfida');
-        if (sfida) {
-          setInviteTarget(sfida);
-        }
+
         const savedUser = myUsernameRef.current;
         const savedToken = sessionTokenRef.current;
         if (savedUser && savedToken) {
@@ -234,28 +320,70 @@ export function ChessApp() {
       ws.onmessage = (event) => {
         try {
           const parsed = JSON.parse(event.data) as ServerEvent;
-          handleServerEvent(parsed);
+          handleServerEventRef.current(parsed);
         } catch {
           // ignore malformed payload
         }
       };
 
+      ws.onerror = () => {
+        if (!opened && !unmounted) {
+          void activateHttpFallback();
+        }
+      };
+
       ws.onclose = () => {
-        setWsReady(false);
-        if (!unmounted) {
-          reconnectTimerRef.current = setTimeout(connect, 1800);
+        if (unmounted) return;
+        if (opened) {
+          // Was connected via WS and dropped; switch immediately to HTTP so UI stays responsive
+          void activateHttpFallback();
         }
       };
     }
 
-    connect();
+    connectWs();
 
     return () => {
       unmounted = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [handleServerEvent]);
+  }, []);
+
+  // Poll server events when running in HTTP fallback mode
+  useEffect(() => {
+    if (transportMode !== 'http' || !profile) return;
+    let cancelled = false;
+    const pollMs = activeGame?.status === 'active' ? 400 : 1200;
+
+    const timer = setInterval(async () => {
+      if (cancelled || !myUsernameRef.current || !sessionTokenRef.current) return;
+      try {
+        const res = await fetch('/api/poll', {
+          cache: 'no-store',
+          headers: {
+            Authorization: `Bearer ${sessionTokenRef.current}`,
+            'x-biochess-user': myUsernameRef.current,
+          },
+        });
+        if (!res.ok && res.status !== 401) return;
+        const data = (await res.json()) as { events?: ServerEvent[] };
+        if (!cancelled && Array.isArray(data.events)) {
+          for (const evt of data.events) {
+            handleServerEventRef.current(evt);
+          }
+        }
+      } catch {
+        // ignore transient network blip
+      }
+    }, pollMs);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [transportMode, profile, activeGame?.status]);
 
   useEffect(() => {
     if (
