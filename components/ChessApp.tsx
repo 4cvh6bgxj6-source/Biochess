@@ -84,7 +84,10 @@ export function ChessApp() {
       body: JSON.stringify(event),
     })
       .then(async (res) => {
-        if (!res.ok && res.status !== 401) return;
+        if (!res.ok && res.status !== 401) {
+          setConnecting(false);
+          return;
+        }
         const data = (await res.json()) as { events?: ServerEvent[] };
         if (Array.isArray(data.events)) {
           for (const evt of data.events) {
@@ -285,12 +288,12 @@ export function ChessApp() {
       wsRef.current = ws;
       let opened = false;
 
-      // If WebSocket doesn't open within 900ms (e.g. blocked by iframe/proxy), switch cleanly to HTTP
+      // If WebSocket doesn't open within 600ms (e.g. blocked or unsupported on Vercel), switch cleanly to HTTP
       fallbackTimer = setTimeout(() => {
         if (!opened && !unmounted) {
           void activateHttpFallback();
         }
-      }, 900);
+      }, 600);
 
       ws.onopen = () => {
         opened = true;
@@ -333,11 +336,9 @@ export function ChessApp() {
       };
 
       ws.onclose = () => {
-        if (unmounted) return;
-        if (opened) {
-          // Was connected via WS and dropped; switch immediately to HTTP so UI stays responsive
-          void activateHttpFallback();
-        }
+        if (unmounted || switchedToHttp) return;
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        void activateHttpFallback();
       };
     }
 
