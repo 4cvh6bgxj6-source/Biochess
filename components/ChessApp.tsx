@@ -30,6 +30,7 @@ export function ChessApp() {
   const myUsernameRef = useRef<string | null>(null);
   const sessionTokenRef = useRef<string | null>(null);
   const transportModeRef = useRef<'ws' | 'http'>('ws');
+  const rpcInFlightCountRef = useRef(0);
 
   const [wsReady, setWsReady] = useState(false);
   const [transportMode, setTransportMode] = useState<'ws' | 'http'>('ws');
@@ -78,6 +79,7 @@ export function ChessApp() {
       headers['x-biochess-user'] = myUsernameRef.current;
     }
 
+    rpcInFlightCountRef.current += 1;
     fetch('/api/rpc', {
       method: 'POST',
       headers,
@@ -97,6 +99,9 @@ export function ChessApp() {
       })
       .catch(() => {
         setConnecting(false);
+      })
+      .finally(() => {
+        rpcInFlightCountRef.current = Math.max(0, rpcInFlightCountRef.current - 1);
       });
   }, []);
 
@@ -259,7 +264,7 @@ export function ChessApp() {
         }
       }
       try {
-        const res = await fetch('/api/health', { cache: 'no-store' });
+        const res = await fetch('/api/rpc?ping=1', { cache: 'no-store' });
         if (!unmounted && res.ok) {
           transportModeRef.current = 'http';
           setTransportMode('http');
@@ -352,39 +357,57 @@ export function ChessApp() {
     };
   }, []);
 
-  // Poll server events when running in HTTP fallback mode
+  // Poll server events sequentially on the unified /api/rpc endpoint when running in HTTP fallback mode
   useEffect(() => {
     if (transportMode !== 'http' || !profile) return;
     let cancelled = false;
-    const pollMs = activeGame?.status === 'active' ? 400 : 1200;
+    let pollTimer: NodeJS.Timeout | null = null;
+    const pollMs =
+      activeGame?.status === 'active'
+        ? activeGame.isBotGame
+          ? 4000
+          : 500
+        : 1500;
 
-    const timer = setInterval(async () => {
-      if (cancelled || !myUsernameRef.current || !sessionTokenRef.current) return;
-      try {
-        const res = await fetch('/api/poll', {
-          cache: 'no-store',
-          headers: {
-            Authorization: `Bearer ${sessionTokenRef.current}`,
-            'x-biochess-user': myUsernameRef.current,
-          },
-        });
-        if (!res.ok && res.status !== 401) return;
-        const data = (await res.json()) as { events?: ServerEvent[] };
-        if (!cancelled && Array.isArray(data.events)) {
-          for (const evt of data.events) {
-            handleServerEventRef.current(evt);
+    async function runPoll() {
+      if (cancelled) return;
+      if (
+        rpcInFlightCountRef.current === 0 &&
+        myUsernameRef.current &&
+        sessionTokenRef.current
+      ) {
+        try {
+          const res = await fetch('/api/rpc', {
+            cache: 'no-store',
+            headers: {
+              Authorization: `Bearer ${sessionTokenRef.current}`,
+              'x-biochess-user': myUsernameRef.current,
+            },
+          });
+          if (res.ok || res.status === 401) {
+            const data = (await res.json()) as { events?: ServerEvent[] };
+            if (!cancelled && Array.isArray(data.events)) {
+              for (const evt of data.events) {
+                handleServerEventRef.current(evt);
+              }
+            }
           }
+        } catch {
+          // ignore transient network blip
         }
-      } catch {
-        // ignore transient network blip
       }
-    }, pollMs);
+      if (!cancelled) {
+        pollTimer = setTimeout(runPoll, pollMs);
+      }
+    }
+
+    pollTimer = setTimeout(runPoll, pollMs);
 
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (pollTimer) clearTimeout(pollTimer);
     };
-  }, [transportMode, profile, activeGame?.status]);
+  }, [transportMode, profile, activeGame?.status, activeGame?.isBotGame]);
 
   useEffect(() => {
     if (

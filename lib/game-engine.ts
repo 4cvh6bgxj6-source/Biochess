@@ -75,7 +75,15 @@ function resolveStorePath(): string {
     fs.accessSync(localDir, fs.constants.W_OK);
     return localFile;
   } catch {
-    return path.join(os.tmpdir(), 'biochess-club-store.json');
+    const tmpFile = path.join(os.tmpdir(), 'biochess-club-store.json');
+    try {
+      if (!fs.existsSync(tmpFile) && fs.existsSync(localFile)) {
+        fs.copyFileSync(localFile, tmpFile);
+      }
+    } catch {
+      // ignore read-only / copy issues
+    }
+    return tmpFile;
   }
 }
 
@@ -1240,7 +1248,14 @@ export function verifyHttpBearerHeaders(
   const token = authHeader.slice(7).trim();
   const key = normalizeKey(rawUser);
   const eng = getEngine();
-  const player = eng.store.players[key];
+  let player = eng.store.players[key];
+  if (!player) {
+    const disk = loadStoreFromDisk(eng.storePath);
+    if (disk.players[key]) {
+      eng.store.players[key] = disk.players[key];
+      player = disk.players[key];
+    }
+  }
   if (!player || !verifyToken(token, player.token)) return null;
   return key;
 }

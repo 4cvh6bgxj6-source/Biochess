@@ -3,14 +3,53 @@ import type { ClientEvent, ServerEvent } from '@/lib/types';
 import {
   broadcastLobbyToAll,
   buildAuthOkEvent,
+  getConnectedUserKeys,
   getEngine,
   handleAuthenticatedAction,
   processAuthMessage,
   saveStoreNow,
+  tickServerClocks,
   verifyHttpBearerHeaders,
 } from '@/lib/game-engine';
 
 export const dynamic = 'force-dynamic';
+
+export async function GET(req: NextRequest) {
+  const eng = getEngine();
+
+  if (req.nextUrl.searchParams.get('ping') === '1') {
+    return NextResponse.json({
+      status: 'ok',
+      onlinePlayers: getConnectedUserKeys().length,
+      activeGames: eng.games.size,
+    });
+  }
+
+  const userKey = verifyHttpBearerHeaders(
+    req.headers.get('authorization'),
+    req.headers.get('x-biochess-user')
+  );
+  if (!userKey) {
+    return NextResponse.json(
+      { events: [{ type: 'auth:error', message: 'Sessione scaduta. Accedi di nuovo.' }] },
+      { status: 401 }
+    );
+  }
+
+  tickServerClocks();
+
+  let sess = eng.httpSessionsByUser.get(userKey);
+  if (!sess) {
+    sess = { queue: [], lastPollAt: Date.now() };
+    eng.httpSessionsByUser.set(userKey, sess);
+    broadcastLobbyToAll();
+  } else {
+    sess.lastPollAt = Date.now();
+  }
+
+  const events = sess.queue.splice(0);
+  return NextResponse.json({ events });
+}
 
 export async function POST(req: NextRequest) {
   let msg: ClientEvent;
