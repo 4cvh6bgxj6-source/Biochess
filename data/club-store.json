@@ -1,0 +1,60 @@
+{
+  "players": {
+    "chess": {
+      "username": "CHESS",
+      "key": "chess",
+      "token": "tok_01bbc948be01",
+      "elo": 224,
+      "wins": 0,
+      "losses": 1,
+      "draws": 0,
+      "lastSeenAt": 1795533084052
+    },
+    "elo_win": {
+      "username": "elo_win",
+      "key": "elo_win",
+      "token": "tok_82b21503046c",
+      "elo": 350,
+      "wins": 1,
+      "losses": 0,
+      "draws": 0,
+      "lastSeenAt": 1795531452325
+    },
+    "elo_lose": {
+      "username": "elo_lose",
+      "key": "elo_lose",
+      "token": "tok_01ab42e78b4e",
+      "elo": 224,
+      "wins": 0,
+      "losses": 1,
+      "draws": 0,
+      "lastSeenAt": 1795531452320
+    }
+  },
+  "recentMatches": [
+    {
+      "id": "game_c8ac1dd0fa35",
+      "white": "CHESS",
+      "black": "Bot Re",
+      "winner": "b",
+      "status": "checkmate",
+      "endReason": "Scacco matto! Vince Bot Re.",
+      "movesCount": 52,
+      "timeControl": "blitz_5_0",
+      "finishedAt": 1795531609523,
+      "isBotGame": true
+    },
+    {
+      "id": "game_a3ab2c54b257",
+      "white": "elo_win",
+      "black": "elo_lose",
+      "winner": "w",
+      "status": "resigned",
+      "endReason": "elo_lose ha abbandonato la partita.",
+      "movesCount": 1,
+      "timeControl": "blitz_5_0",
+      "finishedAt": 1795531451481,
+      "isBotGame": false
+    }
+  ]
+}

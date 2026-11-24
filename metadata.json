@@ -1,0 +1,8 @@
+{
+  "name": "Circolo Scacchi",
+  "description": "Scacchi online in tempo reale: sfida amici o avversari con il solo username, affronta bot tattici e comunica nella chat integrata.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
