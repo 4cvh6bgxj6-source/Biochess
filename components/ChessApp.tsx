@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
+import { Chess } from 'chess.js';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   getRedirectResult,
@@ -123,6 +124,8 @@ export function ChessApp() {
   const prevGameStatusRef = useRef<Record<string, string>>({});
   const prevChatCountRef = useRef<Record<string, number>>({});
   const prevIncomingChallengeIdsRef = useRef<Set<string>>(new Set());
+  const lastLocallyPlayedMoveRef = useRef<{ gameId: string; ply: number } | null>(null);
+  const activeLangRef = useRef<string>('it');
 
   if (runtimeFatalError) {
     throw runtimeFatalError;
@@ -138,6 +141,10 @@ export function ChessApp() {
   const activeLang = profile?.lang || selectedLocale.lang;
   const activeCountry = profile?.country || selectedLocale.country;
   const dict = useMemo(() => getUiDict(activeLang), [activeLang]);
+
+  useEffect(() => {
+    activeLangRef.current = activeLang;
+  }, [activeLang]);
 
   // Parse invite link ?sfida=username
   useEffect(() => {
@@ -403,17 +410,32 @@ export function ChessApp() {
 
     if (activeGame.moves.length > prevCount) {
       const lastMove = activeGame.moves[activeGame.moves.length - 1];
-      if (activeGame.status !== 'active') {
-        soundFX.playGameOver();
-      } else if (lastMove?.san.includes('+') || lastMove?.san.includes('#')) {
-        soundFX.playCheck();
-      } else if (lastMove?.captured) {
-        soundFX.playCapture();
-      } else {
-        soundFX.playMove();
+      const alreadyPlayedLocally =
+        lastLocallyPlayedMoveRef.current?.gameId === gId &&
+        lastLocallyPlayedMoveRef.current?.ply === activeGame.moves.length;
+
+      if (!alreadyPlayedLocally) {
+        const isCapture = Boolean(lastMove?.captured);
+        const isCheck = Boolean(lastMove?.san.includes('+') || lastMove?.san.includes('#'));
+        const isCastle = lastMove?.san === 'O-O' || lastMove?.san === 'O-O-O';
+        const isPromote = Boolean(lastMove?.promotion);
+
+        if (activeGame.status !== 'active') {
+          soundFX.playGameOver(true);
+        } else if (isCheck) {
+          soundFX.playCheck(isCapture);
+        } else if (isCastle) {
+          soundFX.playCastle();
+        } else if (isPromote) {
+          soundFX.playPromote();
+        } else if (isCapture) {
+          soundFX.playCapture();
+        } else {
+          soundFX.playOpponentMove();
+        }
       }
     } else if (prevStatus === 'active' && activeGame.status !== 'active') {
-      soundFX.playGameOver();
+      soundFX.playGameOver(false);
     }
 
     prevMovesCountRef.current[gId] = activeGame.moves.length;
@@ -560,6 +582,7 @@ export function ChessApp() {
         liveWhiteMs: liveTimesRef.current.w,
         liveBlackMs: liveTimesRef.current.b,
         humanLastMoveMeta: meta,
+        lang: activeLangRef.current,
       })
         .then((submitted) => {
           if (!submitted && botTurnKeyRef.current === turnKey) {
@@ -683,6 +706,42 @@ export function ChessApp() {
     promotion?: 'q' | 'r' | 'b' | 'n'
   ) {
     if (!authUser || !activeGame || activeGame.status !== 'active') return;
+    soundFX.unlock();
+
+    // Play the crisp wooden piece sound immediately inside the user gesture (0ms latency)
+    let playedLocally = false;
+    try {
+      const previewChess = new Chess(activeGame.fen);
+      const previewRes = previewChess.move({
+        from,
+        to,
+        promotion: promotion || 'q',
+      });
+      if (previewRes) {
+        playedLocally = true;
+        lastLocallyPlayedMoveRef.current = {
+          gameId: activeGame.id,
+          ply: activeGame.moves.length + 1,
+        };
+        const isOver = previewChess.isGameOver();
+        if (isOver) {
+          soundFX.playGameOver(true);
+        } else if (previewChess.inCheck()) {
+          soundFX.playCheck(Boolean(previewRes.captured));
+        } else if (previewRes.flags.includes('k') || previewRes.flags.includes('q')) {
+          soundFX.playCastle();
+        } else if (previewRes.promotion) {
+          soundFX.playPromote();
+        } else if (previewRes.captured) {
+          soundFX.playCapture();
+        } else {
+          soundFX.playMove();
+        }
+      }
+    } catch {
+      // let submitMoveToFirestore report invalid moves if any
+    }
+
     try {
       const res = await submitMoveToFirestore({
         game: activeGame,
@@ -694,6 +753,9 @@ export function ChessApp() {
         liveBlackMs: blackTimeMs,
       });
       if (!res.ok) {
+        if (playedLocally) {
+          lastLocallyPlayedMoveRef.current = null;
+        }
         setGameError(res.error);
         setTimeout(() => setGameError(null), 3000);
         return;
@@ -708,6 +770,9 @@ export function ChessApp() {
         };
       }
     } catch (err) {
+      if (playedLocally) {
+        lastLocallyPlayedMoveRef.current = null;
+      }
       setRuntimeFatalError(err as Error);
     }
   }
@@ -894,7 +959,8 @@ export function ChessApp() {
                       activeGame,
                       authUser.uid,
                       profile.username,
-                      text
+                      text,
+                      activeLang
                     ).catch((err: Error) => setRuntimeFatalError(err));
                   }}
                   onResign={() => {
@@ -916,7 +982,8 @@ export function ChessApp() {
                       activeGame,
                       myColor,
                       profile.username,
-                      authUser.uid
+                      authUser.uid,
+                      activeLang
                     ).catch((err: Error) => setRuntimeFatalError(err));
                   }}
                   onRespondDraw={(accept) => {
@@ -925,14 +992,20 @@ export function ChessApp() {
                       activeGame,
                       accept,
                       profile.username,
-                      authUser.uid
+                      authUser.uid,
+                      activeLang
                     ).catch((err: Error) => setRuntimeFatalError(err));
                   }}
                   onRematch={() => {
                     if (!authUser) return;
                     const myColor: PieceColor =
                       !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
-                    void requestOrAcceptRematchInFirestore(activeGame, myColor, authUser.uid)
+                    void requestOrAcceptRematchInFirestore(
+                      activeGame,
+                      myColor,
+                      authUser.uid,
+                      activeLang
+                    )
                       .then((newId) => {
                         if (newId) {
                           setActiveGameId(newId);
@@ -1011,7 +1084,8 @@ export function ChessApp() {
                       authUser.uid,
                       botId,
                       timeControl,
-                      colorPref
+                      colorPref,
+                      activeLang
                     )
                       .then((gameId) => {
                         setActiveGameId(gameId);

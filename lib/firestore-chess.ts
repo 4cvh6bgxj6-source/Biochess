@@ -40,6 +40,7 @@ import {
   getBotMoveComment,
   getBotQualityReaction,
 } from './chess-bot';
+import { getLocalizedBotDrawReply } from './bot-dialogue';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -63,6 +64,7 @@ const RESERVED_USERNAMES = new Set([
   'bot_alfiere',
   'bot_re',
   'coach_alien',
+  'witty_alien',
   'coach_gothamchess',
   'coach_mittens',
   'dummy_training',
@@ -947,9 +949,11 @@ export async function createBotGameInFirestore(
   myUid: string,
   botId: BotId,
   timeControl: TimeControlId,
-  colorPref: ColorPref
+  colorPref: ColorPref,
+  lang?: string
 ): Promise<string> {
   const bot = BOT_DEFINITIONS[botId];
+  const botLang = lang || me.lang;
   const playerPlaysWhite =
     colorPref === 'w' ? true : colorPref === 'b' ? false : Math.random() < 0.5;
 
@@ -1004,7 +1008,7 @@ export async function createBotGameInFirestore(
       id: greetMsgId,
       sender: bot.name.slice(0, 32),
       authorUid: myUid,
-      text: getBotGreeting(botId, me.username).slice(0, 400),
+      text: getBotGreeting(botId, me.username, botLang).slice(0, 400),
       kind: 'bot',
       createdAt: serverTimestamp(),
     });
@@ -1180,8 +1184,9 @@ export async function runBotTurnInFirestore(params: {
   liveWhiteMs: number;
   liveBlackMs: number;
   humanLastMoveMeta?: { quality: GameMove['quality']; captured?: string; inCheck: boolean };
+  lang?: string;
 }): Promise<boolean> {
-  const { game, uid, liveWhiteMs, liveBlackMs, humanLastMoveMeta } = params;
+  const { game, uid, liveWhiteMs, liveBlackMs, humanLastMoveMeta, lang } = params;
   if (game.status !== 'active' || !game.isBotGame || !game.botId || game.botId === 'dummy') {
     return false;
   }
@@ -1193,12 +1198,14 @@ export async function runBotTurnInFirestore(params: {
   if (!botMove) return false;
 
   let botComment: string | null = null;
-  if (humanLastMoveMeta) {
-    botComment = getBotQualityReaction(game.botId, humanLastMoveMeta.quality || 'neutral');
+  if (game.botId === 'alien' && botMove.san === 'Nxf7') {
+    botComment = getBotMoveComment('alien', 'alien_gambit', lang);
+  } else if (humanLastMoveMeta) {
+    botComment = getBotQualityReaction(game.botId, humanLastMoveMeta.quality || 'neutral', lang);
     if (!botComment && humanLastMoveMeta.captured === 'q') {
-      botComment = getBotMoveComment(game.botId, 'capture_queen');
+      botComment = getBotMoveComment(game.botId, 'capture_queen', lang);
     } else if (!botComment && humanLastMoveMeta.inCheck && Math.random() < 0.45) {
-      botComment = getBotMoveComment(game.botId, 'bot_checked');
+      botComment = getBotMoveComment(game.botId, 'bot_checked', lang);
     }
   }
 
@@ -1218,7 +1225,7 @@ export async function runBotTurnInFirestore(params: {
   }
 
   if (res.nextStatus === 'checkmate' && game.botId) {
-    const winMsg = getBotMoveComment(game.botId, 'checkmate_win');
+    const winMsg = getBotMoveComment(game.botId, 'checkmate_win', lang);
     if (winMsg) {
       await sendSystemOrBotChatMessage({
         gameId: game.id,
@@ -1230,7 +1237,7 @@ export async function runBotTurnInFirestore(params: {
     }
   } else if (res.nextStatus === 'active' && game.botId && !botComment) {
     if (res.captured === 'q') {
-      const text = getBotMoveComment(game.botId, 'capture_queen');
+      const text = getBotMoveComment(game.botId, 'capture_queen', lang);
       if (text) {
         await sendSystemOrBotChatMessage({
           gameId: game.id,
@@ -1241,7 +1248,7 @@ export async function runBotTurnInFirestore(params: {
         });
       }
     } else if (res.inCheck && Math.random() < 0.35) {
-      const text = getBotMoveComment(game.botId, 'check_given');
+      const text = getBotMoveComment(game.botId, 'check_given', lang);
       if (text) {
         await sendSystemOrBotChatMessage({
           gameId: game.id,
@@ -1287,7 +1294,8 @@ export async function sendPlayerChatAndMaybeBotReply(
   game: GameState,
   uid: string,
   myUsername: string,
-  rawText: string
+  rawText: string,
+  lang?: string
 ): Promise<void> {
   const clean = rawText.replace(/\s+/g, ' ').trim().slice(0, 400);
   if (!clean) return;
@@ -1303,7 +1311,7 @@ export async function sendPlayerChatAndMaybeBotReply(
   if (game.isBotGame && game.botId) {
     const botId = game.botId;
     const botColor: PieceColor = game.white.isBot ? 'w' : 'b';
-    const replyText = getBotChatReply(botId, clean, game.fen, botColor, game.moves.length);
+    const replyText = getBotChatReply(botId, clean, game.fen, botColor, game.moves.length, lang);
     setTimeout(() => {
       void sendSystemOrBotChatMessage({
         gameId: game.id,
@@ -1418,7 +1426,8 @@ export async function offerDrawInFirestore(
   game: GameState,
   myColor: PieceColor,
   myUsername: string,
-  uid: string
+  uid: string,
+  lang?: string
 ): Promise<void> {
   if (game.status !== 'active' || game.drawOfferBy === myColor) return;
   const msgId = makeEntityId('msg');
@@ -1452,7 +1461,8 @@ export async function offerDrawInFirestore(
         { ...game, drawOfferBy: myColor },
         botAccepts,
         BOT_DEFINITIONS[botId].name,
-        uid
+        uid,
+        lang
       );
     }, 380);
   }
@@ -1462,7 +1472,8 @@ export async function respondDrawInFirestore(
   game: GameState,
   accept: boolean,
   responderName: string,
-  uid: string
+  uid: string,
+  lang?: string
 ): Promise<void> {
   if (game.status !== 'active' || !game.drawOfferBy) return;
   const msgId = makeEntityId('msg');
@@ -1496,7 +1507,7 @@ export async function respondDrawInFirestore(
         sender: game.isBotGame ? responderName.slice(0, 32) : 'BioChess',
         authorUid: uid,
         text: game.isBotGame
-          ? 'Va bene, accettiamo la patta! Bella partita.'
+          ? getLocalizedBotDrawReply(true, lang)
           : 'Patta accettata.',
         kind: game.isBotGame ? 'bot' : 'system',
         createdAt: serverTimestamp(),
@@ -1511,7 +1522,7 @@ export async function respondDrawInFirestore(
         sender: game.isBotGame ? responderName.slice(0, 32) : 'BioChess',
         authorUid: uid,
         text: game.isBotGame
-          ? 'Continuiamo a giocare, c’è ancora molto sulla scacchiera.'
+          ? getLocalizedBotDrawReply(false, lang)
           : `${responderName} ha rifiutato la patta.`,
         kind: game.isBotGame ? 'bot' : 'system',
         createdAt: serverTimestamp(),
@@ -1526,7 +1537,8 @@ export async function respondDrawInFirestore(
 export async function requestOrAcceptRematchInFirestore(
   game: GameState,
   myColor: PieceColor,
-  uid: string
+  uid: string,
+  lang?: string
 ): Promise<string | null> {
   if (game.status === 'active') return null;
 
@@ -1605,7 +1617,11 @@ export async function requestOrAcceptRematchInFirestore(
       authorUid: uid,
       text:
         game.isBotGame && game.botId
-          ? getBotGreeting(game.botId, nextWhite.isBot ? nextBlack.username : nextWhite.username)
+          ? getBotGreeting(
+              game.botId,
+              nextWhite.isBot ? nextBlack.username : nextWhite.username,
+              lang
+            ).slice(0, 400)
           : 'Rivincita iniziata!',
       kind: game.isBotGame ? 'bot' : 'system',
       createdAt: serverTimestamp(),

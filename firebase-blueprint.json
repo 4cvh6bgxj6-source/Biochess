@@ -138,7 +138,7 @@
         },
         "timeControl": {
           "type": "string",
-          "enum": ["blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
+          "enum": ["bullet_1_0", "blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
         },
         "colorPref": {
           "type": "string",
@@ -268,7 +268,7 @@
         },
         "timeControl": {
           "type": "string",
-          "enum": ["blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
+          "enum": ["bullet_1_0", "blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
         },
         "whiteTimeMs": {
           "type": "number"
@@ -506,7 +506,7 @@
         },
         "timeControl": {
           "type": "string",
-          "enum": ["blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
+          "enum": ["bullet_1_0", "blitz_3_2", "blitz_5_0", "rapid_10_0", "unlimited"]
         },
         "isBotGame": {
           "type": "boolean"

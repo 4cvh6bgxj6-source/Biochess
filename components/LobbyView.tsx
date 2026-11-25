@@ -49,7 +49,7 @@ interface LobbyViewProps {
 }
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-const TIME_OPTIONS: TimeControlId[] = ['blitz_3_2', 'blitz_5_0', 'rapid_10_0', 'unlimited'];
+const TIME_OPTIONS: TimeControlId[] = ['bullet_1_0', 'blitz_3_2', 'blitz_5_0', 'rapid_10_0', 'unlimited'];
 const CLASSIC_BOTS: BotId[] = ['knight', 'bishop', 'king', 'master'];
 const TRAINING_BOTS: BotId[] = ['dummy', 'alien', 'gothamchess', 'mittens'];
 
@@ -308,13 +308,13 @@ export function LobbyView({
                     <span className="block text-xs font-bold text-[#C3C2C0] mb-1.5">
                       {dict.timeControl}
                     </span>
-                    <div className="grid grid-cols-4 gap-1.5">
+                    <div className="grid grid-cols-5 gap-1.5">
                       {TIME_OPTIONS.map((tcId) => (
                         <button
                           key={tcId}
                           type="button"
                           onClick={() => setTimeControl(tcId)}
-                          className={`py-2 text-xs font-bold rounded border transition-colors whitespace-nowrap ${
+                          className={`py-2 px-1 text-xs font-bold rounded border transition-colors whitespace-nowrap ${
                             timeControl === tcId
                               ? 'bg-[#3C3A36] border-[#81B64C] text-white'
                               : 'bg-[#302E2B] border-[#3C3A36] text-[#BABABA] hover:text-white'
@@ -550,13 +550,13 @@ export function LobbyView({
                   <span className="block text-xs font-bold text-[#C3C2C0] mb-1.5">
                     {dict.timeControl}
                   </span>
-                  <div className="grid grid-cols-4 gap-1.5">
+                  <div className="grid grid-cols-5 gap-1.5">
                     {TIME_OPTIONS.map((tcId) => (
                       <button
                         key={tcId}
                         type="button"
                         onClick={() => setTimeControl(tcId)}
-                        className={`py-2 text-xs font-bold rounded border transition-colors whitespace-nowrap ${
+                        className={`py-2 px-1 text-xs font-bold rounded border transition-colors whitespace-nowrap ${
                           timeControl === tcId
                             ? 'bg-[#3C3A36] border-[#81B64C] text-white'
                             : 'bg-[#302E2B] border-[#3C3A36] text-[#BABABA] hover:text-white'

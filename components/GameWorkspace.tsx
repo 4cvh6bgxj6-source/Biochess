@@ -27,6 +27,7 @@ import {
   type PieceColor,
 } from '@/lib/types';
 import { computePostGameReview } from '@/lib/chess-bot';
+import { soundFX } from '@/lib/sound';
 import type { UiDictionary } from '@/lib/i18n';
 import { ChessBoard, type BoardArrow, type BoardHighlight } from './ChessBoard';
 import { PlayerBar } from './PlayerBar';
@@ -182,11 +183,32 @@ export function GameWorkspace({
     return idxs;
   }, [game.moves, myColor, showMoveAnalysis]);
 
+  function playMoveHistorySound(idx: number) {
+    const move = game.moves[idx];
+    if (!move) return;
+    if (move.san.includes('+') || move.san.includes('#')) {
+      soundFX.playCheck(Boolean(move.captured));
+    } else if (move.san === 'O-O' || move.san === 'O-O-O') {
+      soundFX.playCastle();
+    } else if (move.promotion) {
+      soundFX.playPromote();
+    } else if (move.captured) {
+      soundFX.playCapture();
+    } else {
+      soundFX.playMove();
+    }
+  }
+
+  function handleSelectMoveIndex(targetIdx: number) {
+    playMoveHistorySound(targetIdx);
+    setViewMoveIndex(targetIdx === game.moves.length - 1 ? null : targetIdx);
+  }
+
   function handleJumpToNextError() {
     if (errorMoveIndices.length === 0) return;
     const nextIdx = errorMoveIndices.find((idx) => idx > activeMoveIndex);
     const target = nextIdx !== undefined ? nextIdx : errorMoveIndices[0];
-    setViewMoveIndex(target === game.moves.length - 1 ? null : target);
+    handleSelectMoveIndex(target);
   }
 
   const topColor: PieceColor = orientation === 'w' ? 'b' : 'w';
@@ -229,12 +251,12 @@ export function GameWorkspace({
     if (game.moves.length === 0) return;
     if (errorMoveIndices.length > 0) {
       const firstErr = errorMoveIndices[0];
-      setViewMoveIndex(firstErr === game.moves.length - 1 ? null : firstErr);
+      handleSelectMoveIndex(firstErr);
       return;
     }
     const firstMyMove = game.moves.findIndex((m) => m.color === myColor);
     const target = firstMyMove >= 0 ? firstMyMove : 0;
-    setViewMoveIndex(target === game.moves.length - 1 ? null : target);
+    handleSelectMoveIndex(target);
   }
 
   const inspectedMeta =
@@ -494,11 +516,7 @@ export function GameWorkspace({
                     {pair.white && (
                       <button
                         type="button"
-                        onClick={() =>
-                          setViewMoveIndex(
-                            pair.white!.idx === game.moves.length - 1 ? null : pair.white!.idx
-                          )
-                        }
+                        onClick={() => handleSelectMoveIndex(pair.white!.idx)}
                         className={`col-span-5 text-left px-2 py-0.5 rounded inline-flex items-center justify-between gap-1 ${
                           (viewMoveIndex === null && pair.white.idx === game.moves.length - 1) ||
                           viewMoveIndex === pair.white.idx
@@ -515,11 +533,7 @@ export function GameWorkspace({
                     {pair.black && (
                       <button
                         type="button"
-                        onClick={() =>
-                          setViewMoveIndex(
-                            pair.black!.idx === game.moves.length - 1 ? null : pair.black!.idx
-                          )
-                        }
+                        onClick={() => handleSelectMoveIndex(pair.black!.idx)}
                         className={`col-span-5 text-left px-2 py-0.5 rounded inline-flex items-center justify-between gap-1 ${
                           (viewMoveIndex === null && pair.black.idx === game.moves.length - 1) ||
                           viewMoveIndex === pair.black.idx
@@ -566,12 +580,12 @@ export function GameWorkspace({
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setViewMoveIndex((prev) => {
-                    const curr = prev === null ? game.moves.length - 1 : prev;
-                    return Math.max(-1, curr - 1);
-                  })
-                }
+                onClick={() => {
+                  const curr = viewMoveIndex === null ? game.moves.length - 1 : viewMoveIndex;
+                  const target = Math.max(-1, curr - 1);
+                  if (target >= 0) playMoveHistorySound(target);
+                  setViewMoveIndex(target);
+                }}
                 disabled={game.moves.length === 0 || viewMoveIndex === -1}
                 aria-label="Indietro"
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
@@ -580,13 +594,14 @@ export function GameWorkspace({
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setViewMoveIndex((prev) => {
-                    if (prev === null) return null;
-                    const next = prev + 1;
-                    return next >= game.moves.length - 1 ? null : next;
-                  })
-                }
+                onClick={() => {
+                  if (viewMoveIndex === null) return;
+                  const next = viewMoveIndex + 1;
+                  if (next >= 0 && next < game.moves.length) {
+                    playMoveHistorySound(next);
+                  }
+                  setViewMoveIndex(next >= game.moves.length - 1 ? null : next);
+                }}
                 disabled={viewMoveIndex === null}
                 aria-label="Avanti"
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
@@ -595,7 +610,12 @@ export function GameWorkspace({
               </button>
               <button
                 type="button"
-                onClick={() => setViewMoveIndex(null)}
+                onClick={() => {
+                  if (game.moves.length > 0) {
+                    playMoveHistorySound(game.moves.length - 1);
+                  }
+                  setViewMoveIndex(null);
+                }}
                 disabled={viewMoveIndex === null}
                 aria-label="Fine"
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"

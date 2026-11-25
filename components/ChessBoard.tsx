@@ -5,6 +5,7 @@ import { Chess } from 'chess.js';
 import type { PieceSymbol, Square } from 'chess.js';
 import { motion } from 'motion/react';
 import type { GameMove, MoveQuality, PieceColor } from '@/lib/types';
+import { soundFX } from '@/lib/sound';
 import { ChessPiece } from './ChessPiece';
 import { MoveQualityBadge } from './MoveQualityBadge';
 
@@ -467,6 +468,7 @@ export function ChessBoard({
 
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
     justDrewRef.current = false;
+    soundFX.unlock();
     const sq = getSquareFromClientPos(e.clientX, e.clientY);
     if (!sq) return;
 

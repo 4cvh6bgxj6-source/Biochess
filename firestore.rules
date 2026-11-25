@@ -43,7 +43,7 @@ service cloud.firestore {
     }
 
     function isValidTimeControl(tc) {
-      return tc in ['blitz_3_2', 'blitz_5_0', 'rapid_10_0', 'unlimited'];
+      return tc in ['bullet_1_0', 'blitz_3_2', 'blitz_5_0', 'rapid_10_0', 'unlimited'];
     }
 
     function isValidColorPref(cp) {

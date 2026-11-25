@@ -1,4 +1,4 @@
-export type TimeControlId = 'blitz_3_2' | 'blitz_5_0' | 'rapid_10_0' | 'unlimited';
+export type TimeControlId = 'bullet_1_0' | 'blitz_3_2' | 'blitz_5_0' | 'rapid_10_0' | 'unlimited';
 
 export type ColorPref = 'random' | 'w' | 'b';
 
@@ -25,6 +25,13 @@ export interface TimeControlConfig {
 }
 
 export const TIME_CONTROLS: Record<TimeControlId, TimeControlConfig> = {
+  bullet_1_0: {
+    id: 'bullet_1_0',
+    label: 'Bullet 1+0',
+    shortLabel: '1+0',
+    initialMs: 1 * 60 * 1000,
+    incrementMs: 0,
+  },
   blitz_3_2: {
     id: 'blitz_3_2',
     label: 'Blitz 3+2',
@@ -239,15 +246,15 @@ export const BOT_DEFINITIONS: Record<BotId, BotDefinition> = {
   },
   alien: {
     id: 'alien',
-    name: 'Coach Alien',
-    username: 'Coach_Alien',
+    name: 'Witty Alien',
+    username: 'Witty_Alien',
     elo: 1850,
     role: 'coach',
     hasPostGameReview: true,
-    tierLabel: 'Coach · Alieno',
+    tierLabel: 'Witty · Alieno',
     pieceType: 'q',
     badgeEmoji: '🛸',
-    styleDescription: 'Coach cosmico posizionale, mette pressione sul centro e analizza ogni errore a fine partita.',
+    styleDescription: 'Alieno scatenato da 1850 ELO: ama l’Alien Gambit (6. Nxf7!!) e porta festa nello spazio.',
   },
   gothamchess: {
     id: 'gothamchess',
@@ -272,7 +279,7 @@ export const BOT_DEFINITIONS: Record<BotId, BotDefinition> = {
     tierLabel: 'Coach · Supremo',
     pieceType: 'k',
     badgeEmoji: '🐱',
-    styleDescription: 'Il gattino implacabile da 3200 ELO: calcolo profondo e revisione severa a fine partita.',
+    styleDescription: 'Il gattino saggio e implacabile da 3200 ELO: calcolo profondo e massima saggezza sulle 64 case.',
   },
 };
 
