@@ -74,7 +74,9 @@ export function ChessApp() {
   const [gameError, setGameError] = useState<string | null>(null);
   const [runtimeFatalError, setRuntimeFatalError] = useState<Error | null>(null);
 
-  const [onlinePlayers, setOnlinePlayers] = useState<PlayerSummary[]>([]);
+  const [rawOnlinePlayers, setRawOnlinePlayers] = useState<PlayerSummary[]>([]);
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  const [presenceNowMs, setPresenceNowMs] = useState(() => Date.now());
   const [leaderboard, setLeaderboard] = useState<PlayerSummary[]>([]);
   const [recentMatches, setRecentMatches] = useState<RecentMatchSummary[]>([]);
   const [incomingChallenges, setIncomingChallenges] = useState<Challenge[]>([]);
@@ -172,7 +174,8 @@ export function ChessApp() {
         setActiveGameDoc(null);
         setActiveMovesState({ gameId: '', moves: [] });
         setActiveMessagesState({ gameId: '', messages: [] });
-        setOnlinePlayers([]);
+        setRawOnlinePlayers([]);
+        setClockOffsetMs(0);
         setLeaderboard([]);
         setRecentMatches([]);
         setIncomingChallenges([]);
@@ -194,6 +197,9 @@ export function ChessApp() {
       (prof) => {
         setProfile(prof);
         setLoadedProfileUid(uid);
+        if (typeof prof?.lastSeenAtMs === 'number') {
+          setClockOffsetMs(prof.lastSeenAtMs - Date.now());
+        }
       },
       handleListenerError
     );
@@ -208,29 +214,79 @@ export function ChessApp() {
     profileActiveGameIdRef.current = profile?.activeGameId || '';
   }, [profile?.activeGameId]);
 
-  // Set online presence and clean offline transition on page unload
+  // Set online presence with heartbeat, network/visibility listeners, and unload cleanup
   useEffect(() => {
     if (!authUser || !hasProfile) return;
     const uid = authUser.uid;
+
+    const markOnline = () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      void setPresence(uid, true).catch(() => {});
+    };
+
+    const markOffline = () => {
+      void setPresence(uid, false).catch(() => {});
+    };
+
     void setPresence(uid, true).catch((err: Error) =>
       setRuntimeFatalError(err)
     );
 
-    const handlePageHide = () => {
-      void setPresence(uid, false).catch(() => {});
+    const heartbeat = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      markOnline();
+    }, 20_000);
+
+    const presenceTick = setInterval(() => {
+      setPresenceNowMs(Date.now());
+    }, 5_000);
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        setPresenceNowMs(Date.now());
+        markOnline();
+      }
     };
-    window.addEventListener('pagehide', handlePageHide);
+
+    const handleOnline = () => {
+      setPresenceNowMs(Date.now());
+      markOnline();
+    };
+
+    window.addEventListener('pagehide', markOffline);
+    window.addEventListener('beforeunload', markOffline);
+    window.addEventListener('offline', markOffline);
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
-      window.removeEventListener('pagehide', handlePageHide);
+      clearInterval(heartbeat);
+      clearInterval(presenceTick);
+      window.removeEventListener('pagehide', markOffline);
+      window.removeEventListener('beforeunload', markOffline);
+      window.removeEventListener('offline', markOffline);
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [authUser, hasProfile]);
+
+  const onlinePlayers = useMemo(() => {
+    const effectiveNow = presenceNowMs + clockOffsetMs;
+    const staleThresholdMs = 55_000;
+    return rawOnlinePlayers.filter(
+      (p) =>
+        p.status !== 'offline' &&
+        typeof p.lastSeenAtMs === 'number' &&
+        effectiveNow - p.lastSeenAtMs <= staleThresholdMs
+    );
+  }, [rawOnlinePlayers, presenceNowMs, clockOffsetMs]);
 
   // Subscribe to Lobby & My Games ONLY when profile exists
   useEffect(() => {
     if (!authReady || !authUser || !hasProfile) return;
     const uid = authUser.uid;
 
-    const unsubOnline = subscribeOnlinePlayers(uid, setOnlinePlayers, handleListenerError);
+    const unsubOnline = subscribeOnlinePlayers(uid, setRawOnlinePlayers, handleListenerError);
     const unsubBoard = subscribeLeaderboard(setLeaderboard, handleListenerError);
     const unsubRecent = subscribeRecentMatches(setRecentMatches, handleListenerError);
     const unsubChallenges = subscribeChallenges(

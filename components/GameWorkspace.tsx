@@ -20,7 +20,6 @@ import {
   VolumeX,
 } from 'lucide-react';
 import {
-  isTrainingBot,
   TIME_CONTROLS,
   type GameMove,
   type GameState,
@@ -116,10 +115,10 @@ export function GameWorkspace({
 
   const orientation: PieceColor = flipped ? (myColor === 'w' ? 'b' : 'w') : myColor;
   const isActive = game.status === 'active';
-  const isTrainingMatch = Boolean(game.isBotGame && isTrainingBot(game.botId));
 
-  // Revision ONLY appears at the end of a game AND ONLY against Coaches or Dummy
-  const showReview = !isActive && isTrainingMatch;
+  // Bot matches: live move analysis immediately during the game + at game end.
+  // Online PvP matches: NO live hints/badges during play; full review unlocks at the end.
+  const showMoveAnalysis = Boolean(game.isBotGame) || !isActive;
 
   const isInspectingHistory =
     viewMoveIndex !== null && viewMoveIndex < game.moves.length - 1;
@@ -141,9 +140,9 @@ export function GameWorkspace({
     return {
       from: inspectedMove.from,
       to: inspectedMove.to,
-      quality: showReview ? inspectedMove.quality : undefined,
+      quality: showMoveAnalysis ? inspectedMove.quality : undefined,
     };
-  }, [inspectedMove, showReview]);
+  }, [inspectedMove, showMoveAnalysis]);
 
   const material = useMemo(() => computeCaptured(game.moves), [game.moves]);
 
@@ -156,7 +155,7 @@ export function GameWorkspace({
       mistake: 0,
       blunder: 0,
     };
-    if (!showReview) return counts;
+    if (!showMoveAnalysis) return counts;
     for (const m of game.moves) {
       if (m.color !== myColor) continue;
       if (m.quality && m.quality !== 'neutral') {
@@ -164,15 +163,15 @@ export function GameWorkspace({
       }
     }
     return counts;
-  }, [game.moves, myColor, showReview]);
+  }, [game.moves, myColor, showMoveAnalysis]);
 
   const reviewData = useMemo(() => {
-    if (!showReview) return null;
+    if (!showMoveAnalysis) return null;
     return computePostGameReview(game.moves, myColor);
-  }, [showReview, game.moves, myColor]);
+  }, [showMoveAnalysis, game.moves, myColor]);
 
   const errorMoveIndices = useMemo(() => {
-    if (!showReview) return [] as number[];
+    if (!showMoveAnalysis) return [] as number[];
     const idxs: number[] = [];
     for (let i = 0; i < game.moves.length; i++) {
       const m = game.moves[i];
@@ -181,7 +180,7 @@ export function GameWorkspace({
       }
     }
     return idxs;
-  }, [game.moves, myColor, showReview]);
+  }, [game.moves, myColor, showMoveAnalysis]);
 
   function handleJumpToNextError() {
     if (errorMoveIndices.length === 0) return;
@@ -239,12 +238,12 @@ export function GameWorkspace({
   }
 
   const inspectedMeta =
-    showReview && inspectedMove?.quality && inspectedMove.quality !== 'neutral'
+    showMoveAnalysis && inspectedMove?.quality && inspectedMove.quality !== 'neutral'
       ? QUALITY_META[inspectedMove.quality]
       : null;
 
   const bestMoveHint =
-    showReview && reviewData && activeMoveIndex >= 0
+    showMoveAnalysis && reviewData && activeMoveIndex >= 0
       ? reviewData.bestMoveByPly[activeMoveIndex]
       : undefined;
 
@@ -325,7 +324,7 @@ export function GameWorkspace({
             <div className="p-4 bg-[#2E2B27] border-b border-[#3C3A36]">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-lg font-extrabold text-white">{winnerLabel}</h2>
-                {showReview && reviewData && (
+                {reviewData && (
                   <span className="px-2.5 py-1 rounded bg-[#21201D] border border-[#81B64C]/50 text-xs font-bold text-[#81B64C] font-mono-tabular shrink-0">
                     {dict.accuracyLabel}: {reviewData.accuracyPct}%
                   </span>
@@ -333,56 +332,49 @@ export function GameWorkspace({
               </div>
               <p className="text-xs text-[#C3C2C0] mt-0.5">{game.endReason}</p>
 
-              {/* Post-Game Review Summary: ONLY for Coaches & Dummy */}
-              {showReview ? (
-                <div className="mt-3 p-3 rounded bg-[#21201D] border border-[#81B64C]/55 space-y-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-extrabold text-white inline-flex items-center gap-1.5">
-                      <GraduationCap className="w-4 h-4 text-[#81B64C]" />
-                      <span>{dict.reviewTitle}</span>
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      {game.moves.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleStartReview}
-                          className="px-2.5 py-1 rounded bg-[#81B64C] hover:bg-[#95C85E] text-[11px] font-extrabold text-white inline-flex items-center gap-1 whitespace-nowrap"
-                        >
-                          <GraduationCap className="w-3 h-3" />
-                          <span>{dict.startReviewBtn}</span>
-                        </button>
-                      )}
-                      {errorMoveIndices.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleJumpToNextError}
-                          className="px-2.5 py-1 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-[11px] font-bold text-[#F5A84B] inline-flex items-center gap-1 whitespace-nowrap"
-                        >
-                          <Target className="w-3 h-3" />
-                          <span>{dict.nextErrorBtn}</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-3 text-xs font-mono-tabular">
-                    <span className="text-[#D2B088] inline-flex items-center gap-1">
-                      <BookOpen className="w-3 h-3" />
-                      {myQualityCounts.book}
-                    </span>
-                    <span className="text-[#26D0C9]">!! {myQualityCounts.brilliant}</span>
-                    <span className="text-[#7AB3E0]">! {myQualityCounts.great}</span>
-                    <span className="text-[#9ED16A]">Buone {myQualityCounts.good}</span>
-                    <span className="text-[#F5A84B]">? {myQualityCounts.mistake}</span>
-                    <span className="text-[#F16562]">?? {myQualityCounts.blunder}</span>
+              {/* Post-Game Review Summary (Bot & Online PvP matches) */}
+              <div className="mt-3 p-3 rounded bg-[#21201D] border border-[#81B64C]/55 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-extrabold text-white inline-flex items-center gap-1.5">
+                    <GraduationCap className="w-4 h-4 text-[#81B64C]" />
+                    <span>{dict.reviewTitle}</span>
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {game.moves.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleStartReview}
+                        className="px-2.5 py-1 rounded bg-[#81B64C] hover:bg-[#95C85E] text-[11px] font-extrabold text-white inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <GraduationCap className="w-3 h-3" />
+                        <span>{dict.startReviewBtn}</span>
+                      </button>
+                    )}
+                    {errorMoveIndices.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleJumpToNextError}
+                        className="px-2.5 py-1 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-[11px] font-bold text-[#F5A84B] inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <Target className="w-3 h-3" />
+                        <span>{dict.nextErrorBtn}</span>
+                      </button>
+                    )}
                   </div>
                 </div>
-              ) : (
-                <p className="mt-2.5 text-[11px] text-[#9E9D9A] flex items-center gap-1.5">
-                  <GraduationCap className="w-3.5 h-3.5 text-[#81B64C] shrink-0" />
-                  <span>{dict.reviewOnlyCoachDesc}</span>
-                </p>
-              )}
+
+                <div className="flex flex-wrap items-center gap-3 text-xs font-mono-tabular">
+                  <span className="text-[#D2B088] inline-flex items-center gap-1">
+                    <BookOpen className="w-3 h-3" />
+                    {myQualityCounts.book}
+                  </span>
+                  <span className="text-[#26D0C9]">!! {myQualityCounts.brilliant}</span>
+                  <span className="text-[#7AB3E0]">! {myQualityCounts.great}</span>
+                  <span className="text-[#9ED16A]">Buone {myQualityCounts.good}</span>
+                  <span className="text-[#F5A84B]">? {myQualityCounts.mistake}</span>
+                  <span className="text-[#F16562]">?? {myQualityCounts.blunder}</span>
+                </div>
+              </div>
 
               <div className="flex flex-wrap items-center gap-2 mt-3.5">
                 <button
@@ -436,8 +428,8 @@ export function GameWorkspace({
             </div>
           )}
 
-          {/* Post-Game Move Evaluation Bar: ONLY rendered after finished Coach/Dummy matches */}
-          {showReview && inspectedMove && (
+          {/* Move Evaluation Bar: Live during Bot matches, Post-Game only during Online PvP */}
+          {showMoveAnalysis && inspectedMove && (
             <div className="px-3.5 py-2 bg-[#21201D] border-b border-[#3C3A36] flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 {inspectedMove.quality && inspectedMove.quality !== 'neutral' && (
@@ -466,13 +458,20 @@ export function GameWorkspace({
                   </p>
                 </div>
               </div>
-              {inspectedMove.quality !== 'book' &&
-                typeof inspectedMove.cpLoss === 'number' &&
-                inspectedMove.cpLoss > 0 && (
-                  <span className="text-[11px] font-mono-tabular text-[#9E9D9A] shrink-0">
-                    -{(inspectedMove.cpLoss / 100).toFixed(1)}
+              <div className="flex items-center gap-2 shrink-0">
+                {isActive && game.isBotGame && reviewData && (
+                  <span className="px-2 py-0.5 rounded bg-[#262421] border border-[#81B64C]/40 text-[10px] font-bold text-[#81B64C] font-mono-tabular">
+                    {reviewData.accuracyPct}%
                   </span>
                 )}
+                {inspectedMove.quality !== 'book' &&
+                  typeof inspectedMove.cpLoss === 'number' &&
+                  inspectedMove.cpLoss > 0 && (
+                    <span className="text-[11px] font-mono-tabular text-[#9E9D9A]">
+                      -{(inspectedMove.cpLoss / 100).toFixed(1)}
+                    </span>
+                  )}
+              </div>
             </div>
           )}
 
@@ -508,7 +507,7 @@ export function GameWorkspace({
                         }`}
                       >
                         <span className="truncate">{pair.white.move.san}</span>
-                        {showReview && (
+                        {showMoveAnalysis && (
                           <MoveQualityBadge quality={pair.white.move.quality} size="sm" />
                         )}
                       </button>
@@ -529,7 +528,7 @@ export function GameWorkspace({
                         }`}
                       >
                         <span className="truncate">{pair.black.move.san}</span>
-                        {showReview && (
+                        {showMoveAnalysis && (
                           <MoveQualityBadge quality={pair.black.move.quality} size="sm" />
                         )}
                       </button>

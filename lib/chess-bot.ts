@@ -543,8 +543,23 @@ export interface PostGameReviewData {
   bestMoveByPly: Record<number, string>;
 }
 
+const bestMoveHintCache = new Map<string, string | null>();
+
+function getCachedBestMoveSan(fenBefore: string): string | null {
+  if (bestMoveHintCache.has(fenBefore)) {
+    return bestMoveHintCache.get(fenBefore) ?? null;
+  }
+  const best = chooseBotMove(fenBefore, 'king');
+  const san = best ? best.san : null;
+  if (bestMoveHintCache.size >= 500) {
+    bestMoveHintCache.clear();
+  }
+  bestMoveHintCache.set(fenBefore, san);
+  return san;
+}
+
 /**
- * Computes post-game accuracy and best-move suggestions (used exclusively after Coach/Dummy games).
+ * Computes move accuracy and best-move suggestions (live during bot games, post-game for online PvP).
  */
 export function computePostGameReview(
   moves: GameMove[],
@@ -555,16 +570,17 @@ export function computePostGameReview(
 
   for (let i = 0; i < moves.length; i++) {
     const move = moves[i];
-    if (move.color !== playerColor) continue;
-    const loss = typeof move.cpLoss === 'number' ? Math.min(600, move.cpLoss) : 0;
-    playerLosses.push(loss);
+    if (move.color === playerColor) {
+      const loss = typeof move.cpLoss === 'number' ? Math.min(600, move.cpLoss) : 0;
+      playerLosses.push(loss);
+    }
 
     if (move.quality === 'mistake' || move.quality === 'blunder' || move.quality === 'neutral') {
       const fenBefore = i === 0 ? START_FEN : moves[i - 1]?.fen || START_FEN;
       try {
-        const best = chooseBotMove(fenBefore, 'king');
-        if (best && best.san !== move.san) {
-          bestMoveByPly[i] = best.san;
+        const bestSan = getCachedBestMoveSan(fenBefore);
+        if (bestSan && bestSan !== move.san) {
+          bestMoveByPly[i] = bestSan;
         }
       } catch {
         // skip best-move hint if a historical FEN is malformed

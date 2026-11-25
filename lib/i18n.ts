@@ -104,7 +104,7 @@ const IT: UiDictionary = {
   inGame: 'In partita',
   challengeBtn: 'Sfida',
   classicBotsTitle: 'Bot Classici',
-  coachesTrainingTitle: 'Coach & Allenamento (con Revisione a fine partita)',
+  coachesTrainingTitle: 'Coach & Allenamento',
   playAgainst: 'Gioca contro',
   leaderboardTitle: 'Classifica BioChess',
   recentMatchesTitle: 'Ultime Partite',
@@ -126,8 +126,8 @@ const IT: UiDictionary = {
   no: 'No',
   drawBtn: 'Patta',
   makeFirstMove: 'Fai la prima mossa sulla scacchiera',
-  reviewTitle: 'Revisione Coach a fine partita',
-  reviewOnlyCoachDesc: 'Analisi completa disponibile con Coach e Dummy a fine partita.',
+  reviewTitle: 'Revisione Partita',
+  reviewOnlyCoachDesc: 'Con Bot, Coach e Dummy la revisione è attiva subito in partita; nelle partite online appare a fine partita.',
   accuracyLabel: 'Precisione',
   nextErrorBtn: 'Prossimo errore',
   reviewHintPrefix: 'Mossa migliore:',
@@ -139,7 +139,7 @@ const IT: UiDictionary = {
   startReviewBtn: 'Avvia Revisione',
   finishAndReviewBtn: 'Termina e Revisiona',
   trainingComplete: 'Allenamento completato',
-  reviewTag: 'Revisione',
+  reviewTag: 'Revisione Live',
 };
 
 const EN: UiDictionary = {
@@ -176,7 +176,7 @@ const EN: UiDictionary = {
   inGame: 'In game',
   challengeBtn: 'Challenge',
   classicBotsTitle: 'Classic Bots',
-  coachesTrainingTitle: 'Coaches & Training (with Post-Game Review)',
+  coachesTrainingTitle: 'Coaches & Training',
   playAgainst: 'Play against',
   leaderboardTitle: 'BioChess Leaderboard',
   recentMatchesTitle: 'Recent Matches',
@@ -198,8 +198,8 @@ const EN: UiDictionary = {
   no: 'No',
   drawBtn: 'Draw',
   makeFirstMove: 'Make the first move on the board',
-  reviewTitle: 'Post-Game Coach Review',
-  reviewOnlyCoachDesc: 'Full move review available after finishing a game with Coaches or Dummy.',
+  reviewTitle: 'Game Review',
+  reviewOnlyCoachDesc: 'Live move analysis during Bot, Coach & Dummy games; online matches unlock full review after the game ends.',
   accuracyLabel: 'Accuracy',
   nextErrorBtn: 'Next mistake',
   reviewHintPrefix: 'Best move:',
@@ -211,7 +211,7 @@ const EN: UiDictionary = {
   startReviewBtn: 'Start Review',
   finishAndReviewBtn: 'Finish & Review',
   trainingComplete: 'Training completed',
-  reviewTag: 'Review',
+  reviewTag: 'Live Review',
 };
 
 const ES: UiDictionary = {

@@ -489,14 +489,9 @@ export function LobbyView({
                                 <span aria-hidden="true">{bot.badgeEmoji}</span>
                                 <span className="truncate">{bot.name}</span>
                               </span>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <span className="px-1.5 py-0.5 rounded bg-[#81B64C]/20 border border-[#81B64C]/40 text-[10px] font-bold text-[#9ED16A]">
-                                  {dict.reviewTag}
-                                </span>
-                                <span className="text-xs font-mono-tabular font-bold text-[#81B64C]">
-                                  {bot.elo}
-                                </span>
-                              </div>
+                              <span className="text-xs font-mono-tabular font-bold text-[#81B64C] shrink-0">
+                                {bot.elo}
+                              </span>
                             </div>
                             <p className="text-[11px] text-[#9E9D9A] mt-0.5 line-clamp-1">
                               {bot.tierLabel} · {bot.styleDescription}

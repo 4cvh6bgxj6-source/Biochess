@@ -102,6 +102,16 @@ function tsToMs(val: unknown): number {
   return Date.now();
 }
 
+function tsToMsStrict(val: unknown): number | undefined {
+  if (val && typeof (val as Timestamp).toMillis === 'function') {
+    return (val as Timestamp).toMillis();
+  }
+  if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+    return val;
+  }
+  return undefined;
+}
+
 export function normalizeUsernameKey(raw: string): string {
   return raw.trim().toLowerCase();
 }
@@ -180,6 +190,7 @@ function mapUserDocToSummary(data: Record<string, unknown>): PlayerSummary {
     draws: typeof data.draws === 'number' ? data.draws : 0,
     status: !online ? 'offline' : activeGameId ? 'in_game' : 'online',
     activeGameId: activeGameId || null,
+    lastSeenAtMs: tsToMsStrict(data.updatedAt),
     lang: typeof data.lang === 'string' ? sanitizeLangCode(data.lang) : undefined,
     country: sanitizeCountryCode(data.country),
   };
@@ -414,7 +425,7 @@ export function subscribeOnlinePlayers(
   onPlayers: (players: PlayerSummary[]) => void,
   onError: (err: Error) => void
 ): Unsubscribe {
-  const q = query(collection(db, 'users'), where('online', '==', true), limit(50));
+  const q = query(collection(db, 'users'), where('online', '==', true), limit(100));
   return onSnapshot(
     q,
     (snap) => {

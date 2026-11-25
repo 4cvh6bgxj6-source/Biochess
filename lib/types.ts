@@ -64,6 +64,7 @@ export interface PlayerSummary {
   draws: number;
   status: 'online' | 'in_game' | 'offline';
   activeGameId?: string | null;
+  lastSeenAtMs?: number;
   lang?: string;
   country?: string;
 }
