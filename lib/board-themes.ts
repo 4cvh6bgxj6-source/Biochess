@@ -14,6 +14,29 @@ export type BoardThemeId =
 
 export type PieceSetId = 'neo' | 'classic' | 'wood' | 'icy' | 'alpha' | 'metal';
 
+export type SoundProfileId =
+  | 'neo'
+  | 'classic'
+  | 'alpha'
+  | 'wood'
+  | 'icy'
+  | 'metal'
+  | 'marble'
+  | 'glass'
+  | 'sand';
+
+export const SOUND_PROFILE_LABELS: Record<SoundProfileId, { it: string; en: string }> = {
+  neo: { it: 'Torneo Classic', en: 'Tournament Classic' },
+  classic: { it: 'Legno Staunton', en: 'Staunton Wood' },
+  alpha: { it: 'Club Rapido', en: 'Club Blitz' },
+  wood: { it: 'Legno Intagliato', en: 'Carved Wood' },
+  icy: { it: 'Ghiaccio & Cristallo', en: 'Ice & Crystal' },
+  metal: { it: 'Metallo & Acciaio', en: 'Metal & Steel' },
+  marble: { it: 'Marmo & Pietra', en: 'Marble & Stone' },
+  glass: { it: 'Vetro Lucido', en: 'Polished Glass' },
+  sand: { it: 'Pietra & Sabbia', en: 'Sandstone' },
+};
+
 export interface BoardThemeDef {
   id: BoardThemeId;
   name: string;
@@ -21,6 +44,7 @@ export interface BoardThemeDef {
   dark: string;
   highlightLight: string;
   highlightDark: string;
+  soundProfile: SoundProfileId;
   /** Optional subtle surface texture applied via CSS background-image */
   lightTexture?: string;
   darkTexture?: string;
@@ -29,6 +53,7 @@ export interface BoardThemeDef {
 export interface PieceSetDef {
   id: PieceSetId;
   name: string;
+  soundProfile: SoundProfileId;
   whiteFill: string;
   whiteFillAlt: string;
   whiteStroke: string;
@@ -49,6 +74,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#769656',
     highlightLight: '#F5F682',
     highlightDark: '#BACA44',
+    soundProfile: 'neo',
   },
   {
     id: 'brown',
@@ -57,6 +83,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#B58863',
     highlightLight: '#F7EC74',
     highlightDark: '#DAC34B',
+    soundProfile: 'wood',
   },
   {
     id: 'walnut',
@@ -65,6 +92,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#8B5E3C',
     highlightLight: '#EAD16F',
     highlightDark: '#BA943E',
+    soundProfile: 'wood',
     lightTexture:
       'repeating-linear-gradient(12deg, rgba(110,66,30,0.04) 0px, rgba(110,66,30,0.04) 2px, transparent 2px, transparent 9px)',
     darkTexture:
@@ -77,6 +105,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#4B7399',
     highlightLight: '#F5F682',
     highlightDark: '#8DA968',
+    soundProfile: 'neo',
   },
   {
     id: 'icy_sea',
@@ -85,6 +114,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#7094B5',
     highlightLight: '#CBE6FF',
     highlightDark: '#599AD1',
+    soundProfile: 'icy',
   },
   {
     id: 'slate',
@@ -93,6 +123,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#64676A',
     highlightLight: '#DCE384',
     highlightDark: '#959F52',
+    soundProfile: 'metal',
   },
   {
     id: 'marble',
@@ -101,6 +132,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#8C9298',
     highlightLight: '#F4F580',
     highlightDark: '#B7BC58',
+    soundProfile: 'marble',
     lightTexture:
       'linear-gradient(135deg, rgba(255,255,255,0.45) 0%, rgba(200,206,212,0.22) 50%, rgba(255,255,255,0.35) 100%)',
     darkTexture:
@@ -113,6 +145,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#8877B7',
     highlightLight: '#F6F18D',
     highlightDark: '#B799CF',
+    soundProfile: 'glass',
   },
   {
     id: 'red',
@@ -121,6 +154,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#AD534B',
     highlightLight: '#F6E37E',
     highlightDark: '#CA8C47',
+    soundProfile: 'classic',
   },
   {
     id: 'bubblegum',
@@ -129,6 +163,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#D179A0',
     highlightLight: '#F7EE89',
     highlightDark: '#E3A96A',
+    soundProfile: 'glass',
   },
   {
     id: 'emerald',
@@ -137,6 +172,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#4E7E63',
     highlightLight: '#DCE876',
     highlightDark: '#82AE54',
+    soundProfile: 'alpha',
   },
   {
     id: 'sand',
@@ -145,6 +181,7 @@ export const CHESS_BOARD_THEMES: BoardThemeDef[] = [
     dark: '#B3946B',
     highlightLight: '#F1DF79',
     highlightDark: '#C8AC4E',
+    soundProfile: 'sand',
     lightTexture:
       'radial-gradient(rgba(120,90,45,0.05) 1px, transparent 1px)',
     darkTexture:
@@ -156,6 +193,7 @@ export const CHESS_PIECE_SETS: PieceSetDef[] = [
   {
     id: 'neo',
     name: 'Neo',
+    soundProfile: 'neo',
     whiteFill: '#F9F9F7',
     whiteFillAlt: '#DCDCD6',
     whiteStroke: '#2E2B28',
@@ -170,6 +208,7 @@ export const CHESS_PIECE_SETS: PieceSetDef[] = [
   {
     id: 'classic',
     name: 'Classic',
+    soundProfile: 'classic',
     whiteFill: '#FBF8F1',
     whiteFillAlt: '#EAE3D2',
     whiteStroke: '#1E232A',
@@ -182,8 +221,24 @@ export const CHESS_PIECE_SETS: PieceSetDef[] = [
     detailedInnerLines: true,
   },
   {
+    id: 'alpha',
+    name: 'Alpha',
+    soundProfile: 'alpha',
+    whiteFill: '#FFFFFF',
+    whiteFillAlt: '#EBEBEB',
+    whiteStroke: '#171717',
+    whiteDetail: '#171717',
+    blackFill: '#1D1D1D',
+    blackFillAlt: '#111111',
+    blackStroke: '#0A0A0A',
+    blackDetail: '#F0F0F0',
+    strokeWidth: 1.85,
+    detailedInnerLines: true,
+  },
+  {
     id: 'wood',
     name: 'Wood',
+    soundProfile: 'wood',
     whiteFill: '#F3D7A8',
     whiteFillAlt: '#CFA168',
     whiteStroke: '#5C3718',
@@ -198,6 +253,7 @@ export const CHESS_PIECE_SETS: PieceSetDef[] = [
   {
     id: 'icy',
     name: 'Icy',
+    soundProfile: 'icy',
     whiteFill: '#F3FAFF',
     whiteFillAlt: '#C8E4FB',
     whiteStroke: '#285780',
@@ -210,22 +266,9 @@ export const CHESS_PIECE_SETS: PieceSetDef[] = [
     detailedInnerLines: true,
   },
   {
-    id: 'alpha',
-    name: 'Alpha',
-    whiteFill: '#FFFFFF',
-    whiteFillAlt: '#EBEBEB',
-    whiteStroke: '#171717',
-    whiteDetail: '#171717',
-    blackFill: '#1D1D1D',
-    blackFillAlt: '#111111',
-    blackStroke: '#0A0A0A',
-    blackDetail: '#F0F0F0',
-    strokeWidth: 1.85,
-    detailedInnerLines: true,
-  },
-  {
     id: 'metal',
     name: 'Metal',
+    soundProfile: 'metal',
     whiteFill: '#F1F4F7',
     whiteFillAlt: '#BCC5CE',
     whiteStroke: '#2A3138',
@@ -245,4 +288,11 @@ export function getBoardTheme(id?: BoardThemeId | string | null): BoardThemeDef 
 
 export function getPieceSet(id?: PieceSetId | string | null): PieceSetDef {
   return CHESS_PIECE_SETS.find((p) => p.id === id) || CHESS_PIECE_SETS[0];
+}
+
+export function getSoundProfile(id?: SoundProfileId | string | null): SoundProfileId {
+  if (id && id in SOUND_PROFILE_LABELS) {
+    return id as SoundProfileId;
+  }
+  return 'neo';
 }

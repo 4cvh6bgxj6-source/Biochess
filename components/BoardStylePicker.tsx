@@ -1,11 +1,13 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, Highlighter } from 'lucide-react';
+import { Check, ChevronDown, Highlighter, Volume2 } from 'lucide-react';
 import {
   CHESS_BOARD_THEMES,
   CHESS_PIECE_SETS,
+  SOUND_PROFILE_LABELS,
 } from '@/lib/board-themes';
+import { soundFX } from '@/lib/sound';
 import { useBoardStyle } from './BoardThemeContext';
 import { ChessPiece } from './ChessPiece';
 
@@ -35,12 +37,22 @@ const PREVIEW_PIECES: Array<{
 ];
 
 export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePickerProps) {
-  const { boardThemeId, pieceSetId, boardTheme, pieceSet, setBoardThemeId, setPieceSetId } =
-    useBoardStyle();
+  const {
+    boardThemeId,
+    pieceSetId,
+    soundProfileId,
+    boardTheme,
+    pieceSet,
+    setBoardThemeId,
+    setPieceSetId,
+  } = useBoardStyle();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const isEn = lang.toLowerCase() === 'en';
+  const activeSoundName = isEn
+    ? SOUND_PROFILE_LABELS[soundProfileId].en
+    : SOUND_PROFILE_LABELS[soundProfileId].it;
 
   useEffect(() => {
     if (!open) return;
@@ -141,27 +153,45 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
                 {isEn ? 'Board:' : 'Scacchiera:'}{' '}
                 <span className="font-bold text-white">{boardTheme.name}</span>
               </p>
+              <div className="flex items-center justify-between gap-2 pt-0.5">
+                <p className="text-[11px] text-[#81B64C] font-semibold truncate">
+                  {isEn ? 'Sound:' : 'Suono:'} {activeSoundName}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => soundFX.playCapture()}
+                  title={isEn ? 'Test sound' : 'Prova suono'}
+                  className="px-2 py-1 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[10px] font-bold text-[#E5E4E2] inline-flex items-center gap-1 shrink-0"
+                >
+                  <Volume2 className="w-3 h-3 text-[#81B64C]" />
+                  <span>{isEn ? 'Test' : 'Prova'}</span>
+                </button>
+              </div>
             </div>
           </div>
 
           <div className="max-h-[420px] overflow-y-auto p-3 space-y-4">
-            {/* Section 1: Piece Sets (visible immediately with Pawn + Knight + Queen) */}
+            {/* Section 1: Piece Sets */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-[11px] font-extrabold tracking-wide text-[#BABABA]">
-                  {isEn ? 'Piece Set (Pawns, Knights, Kings...)' : 'Stile Pezzi (Pedoni, Cavalli, Re...)'}
-                </h3>
-              </div>
+              <h3 className="text-[11px] font-extrabold tracking-wide text-[#BABABA]">
+                {isEn ? 'Piece Set (Pawns, Knights, Kings...)' : 'Stile Pezzi (Pedoni, Cavalli, Re...)'}
+              </h3>
 
               <div className="grid grid-cols-3 gap-2">
                 {CHESS_PIECE_SETS.map((set) => {
                   const active = set.id === pieceSetId;
+                  const soundLabel = isEn
+                    ? SOUND_PROFILE_LABELS[set.soundProfile].en
+                    : SOUND_PROFILE_LABELS[set.soundProfile].it;
                   return (
                     <button
                       key={set.id}
                       type="button"
-                      onClick={() => setPieceSetId(set.id)}
-                      className={`relative rounded p-2 border transition-colors flex flex-col items-center gap-1.5 ${
+                      onClick={() => {
+                        setPieceSetId(set.id);
+                        soundFX.playMove();
+                      }}
+                      className={`relative rounded p-2 border transition-colors flex flex-col items-center gap-1 ${
                         active
                           ? 'bg-[#302E2B] border-[#81B64C]'
                           : 'bg-[#262421] border-[#3C3A36] hover:bg-[#2F2C28]'
@@ -203,6 +233,9 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
                       >
                         {set.name}
                       </span>
+                      <span className="text-[9px] text-[#8B8987] truncate w-full text-center">
+                        {soundLabel}
+                      </span>
                     </button>
                   );
                 })}
@@ -224,7 +257,10 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
                     <button
                       key={theme.id}
                       type="button"
-                      onClick={() => setBoardThemeId(theme.id)}
+                      onClick={() => {
+                        setBoardThemeId(theme.id);
+                        soundFX.playMove();
+                      }}
                       className={`group rounded p-1.5 border text-left transition-colors flex flex-col items-center gap-1 ${
                         active
                           ? 'bg-[#302E2B] border-[#81B64C]'
