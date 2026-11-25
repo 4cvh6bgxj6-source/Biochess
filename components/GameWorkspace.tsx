@@ -49,6 +49,7 @@ interface GameWorkspaceProps {
   onRespondDraw: (accept: boolean) => void;
   onRematch: () => void;
   onBackToLobby: () => void;
+  onOpenCoachStudio?: () => void;
 }
 
 const PIECE_SCORE: Record<'p' | 'n' | 'b' | 'r' | 'q', number> = {
@@ -101,6 +102,7 @@ export function GameWorkspace({
   onRespondDraw,
   onRematch,
   onBackToLobby,
+  onOpenCoachStudio,
 }: GameWorkspaceProps) {
   const myColor: PieceColor =
     !game.white.isBot && game.white.username.toLowerCase() === myUsername.toLowerCase()
@@ -361,12 +363,22 @@ export function GameWorkspace({
                     <GraduationCap className="w-4 h-4 text-[#81B64C]" />
                     <span>{dict.reviewTitle}</span>
                   </span>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {game.moves.length > 0 && onOpenCoachStudio && (
+                      <button
+                        type="button"
+                        onClick={onOpenCoachStudio}
+                        className="px-2.5 py-1 rounded bg-[#81B64C] hover:bg-[#95C85E] text-[11px] font-extrabold text-white inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <GraduationCap className="w-3 h-3" />
+                        <span>{dict.analyzeWithCoach}</span>
+                      </button>
+                    )}
                     {game.moves.length > 0 && (
                       <button
                         type="button"
                         onClick={handleStartReview}
-                        className="px-2.5 py-1 rounded bg-[#81B64C] hover:bg-[#95C85E] text-[11px] font-extrabold text-white inline-flex items-center gap-1 whitespace-nowrap"
+                        className="px-2.5 py-1 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-[11px] font-bold text-[#DAD9D7] inline-flex items-center gap-1 whitespace-nowrap"
                       >
                         <GraduationCap className="w-3 h-3" />
                         <span>{dict.startReviewBtn}</span>

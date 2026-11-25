@@ -280,6 +280,44 @@ service cloud.firestore {
       );
     }
 
+    function isValidSavedReview(data) {
+      return data.keys().hasAll([
+          'id', 'whiteUsername', 'blackUsername', 'playerColor', 'result',
+          'accuracyPct', 'openingName', 'openingAcc', 'middlegameAcc', 'endgameAcc',
+          'brilliantCount', 'greatCount', 'goodCount', 'inaccuracyCount',
+          'mistakeCount', 'blunderCount', 'missedWinCount', 'movesCount',
+          'source', 'pgn', 'createdAtMs'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'whiteUsername', 'blackUsername', 'playerColor', 'result',
+          'accuracyPct', 'openingName', 'openingAcc', 'middlegameAcc', 'endgameAcc',
+          'brilliantCount', 'greatCount', 'goodCount', 'inaccuracyCount',
+          'mistakeCount', 'blunderCount', 'missedWinCount', 'movesCount',
+          'source', 'pgn', 'createdAtMs'
+        ]) &&
+        isValidEntityId(data.id) &&
+        data.whiteUsername is string && data.whiteUsername.size() >= 1 && data.whiteUsername.size() <= 32 &&
+        data.blackUsername is string && data.blackUsername.size() >= 1 && data.blackUsername.size() <= 32 &&
+        data.playerColor in ['w', 'b'] &&
+        data.result in ['win', 'loss', 'draw'] &&
+        data.accuracyPct is int && data.accuracyPct >= 0 && data.accuracyPct <= 100 &&
+        data.openingName is string && data.openingName.size() >= 1 && data.openingName.size() <= 80 &&
+        data.openingAcc is int && data.openingAcc >= 0 && data.openingAcc <= 100 &&
+        data.middlegameAcc is int && data.middlegameAcc >= 0 && data.middlegameAcc <= 100 &&
+        data.endgameAcc is int && data.endgameAcc >= 0 && data.endgameAcc <= 100 &&
+        data.brilliantCount is int && data.brilliantCount >= 0 && data.brilliantCount <= 2000 &&
+        data.greatCount is int && data.greatCount >= 0 && data.greatCount <= 2000 &&
+        data.goodCount is int && data.goodCount >= 0 && data.goodCount <= 2000 &&
+        data.inaccuracyCount is int && data.inaccuracyCount >= 0 && data.inaccuracyCount <= 2000 &&
+        data.mistakeCount is int && data.mistakeCount >= 0 && data.mistakeCount <= 2000 &&
+        data.blunderCount is int && data.blunderCount >= 0 && data.blunderCount <= 2000 &&
+        data.missedWinCount is int && data.missedWinCount >= 0 && data.missedWinCount <= 2000 &&
+        data.movesCount is int && data.movesCount >= 0 && data.movesCount <= 2000 &&
+        data.source in ['biochess', 'pgn'] &&
+        data.pgn is string && data.pgn.size() <= 8000 &&
+        data.createdAtMs is int && data.createdAtMs > 0;
+    }
+
     // -------------------------------------------------------------------------
     // /users/{uid} - Public Chess Profiles (Zero PII)
     // -------------------------------------------------------------------------
@@ -323,6 +361,24 @@ service cloud.firestore {
         );
 
       allow delete: if false;
+
+      // -----------------------------------------------------------------------
+      // /users/{uid}/reviews/{reviewId} - Owner-only Game Review & Progress Stats
+      // -----------------------------------------------------------------------
+      match /reviews/{reviewId} {
+        allow get, list: if isVerified() &&
+          isValidId(uid) &&
+          uid == request.auth.uid;
+
+        allow create, update: if isVerified() &&
+          isValidId(uid) &&
+          isValidEntityId(reviewId) &&
+          uid == request.auth.uid &&
+          isValidSavedReview(incoming()) &&
+          incoming().id == reviewId;
+
+        allow delete: if false;
+      }
     }
 
     // -------------------------------------------------------------------------

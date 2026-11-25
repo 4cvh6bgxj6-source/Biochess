@@ -12,7 +12,7 @@ import {
   signOut,
   type User,
 } from 'firebase/auth';
-import { Bot, LogOut, Swords, Trophy } from 'lucide-react';
+import { Bot, GraduationCap, LogOut, Swords, TrendingUp, Trophy } from 'lucide-react';
 import type {
   BotId,
   Challenge,
@@ -23,6 +23,7 @@ import type {
   PieceColor,
   PlayerSummary,
   RecentMatchSummary,
+  SavedGameReview,
   TimeControlId,
 } from '@/lib/types';
 import { BIOCHESS_LOGO } from '@/lib/brand';
@@ -42,6 +43,7 @@ import {
   respondDrawInFirestore,
   respondToChallenge,
   runBotTurnInFirestore,
+  saveGameReviewToFirestore,
   sendChallengeToUser,
   sendPlayerChatAndMaybeBotReply,
   setPresence,
@@ -49,6 +51,7 @@ import {
   subscribeChallenges,
   subscribeGameRoom,
   subscribeLeaderboard,
+  subscribeMyGameReviews,
   subscribeMyGames,
   subscribeMyProfile,
   subscribeOnlinePlayers,
@@ -60,6 +63,8 @@ import {
 import { UsernameGateModal } from './UsernameGateModal';
 import { LobbyView, type LobbyTab } from './LobbyView';
 import { GameWorkspace } from './GameWorkspace';
+import { CoachReviewStudio } from './CoachReviewStudio';
+import { StatsDashboard } from './StatsDashboard';
 import { IncomingChallengeToast } from './IncomingChallengeToast';
 import { LanguagePicker } from './LanguagePicker';
 
@@ -94,8 +99,16 @@ export function ChessApp() {
     messages: ChatMessage[];
   }>({ gameId: '', messages: [] });
 
-  const [viewMode, setViewMode] = useState<'lobby' | 'game'>('lobby');
+  const [viewMode, setViewMode] = useState<'lobby' | 'game' | 'coach' | 'stats'>('lobby');
   const [lobbyTab, setLobbyTab] = useState<LobbyTab>('challenge');
+  const [savedReviews, setSavedReviews] = useState<SavedGameReview[]>([]);
+  const [coachTargetGame, setCoachTargetGame] = useState<GameState | null>(null);
+  const [coachTargetPgn, setCoachTargetPgn] = useState<{
+    pgn: string;
+    playerColor: PieceColor;
+    id?: string;
+  } | null>(null);
+  const [coachSessionKey, setCoachSessionKey] = useState(0);
   const [liveClock, setLiveClock] = useState<{ gameId: string; w: number; b: number } | null>(null);
   const [muted, setMuted] = useState(false);
   const [inviteTarget, setInviteTarget] = useState('');
@@ -187,6 +200,9 @@ export function ChessApp() {
         setRecentMatches([]);
         setIncomingChallenges([]);
         setOutgoingChallenges([]);
+        setSavedReviews([]);
+        setCoachTargetGame(null);
+        setCoachTargetPgn(null);
         setViewMode('lobby');
         hasRestoredInitialGameRef.current = false;
         knownActivePvpIdsRef.current = new Set();
@@ -358,12 +374,15 @@ export function ChessApp() {
       handleListenerError
     );
 
+    const unsubMyReviews = subscribeMyGameReviews(uid, setSavedReviews, handleListenerError);
+
     return () => {
       unsubOnline();
       unsubBoard();
       unsubRecent();
       unsubChallenges();
       unsubMyGames();
+      unsubMyReviews();
     };
   }, [authReady, authUser, hasProfile, handleListenerError]);
 
@@ -821,7 +840,7 @@ export function ChessApp() {
 
           {/* Zone 2: Clean Chess.com-style single-line navigation links */}
           {profile && (
-            <nav className="hidden md:flex items-center gap-6 text-sm font-bold text-[#BABABA]">
+            <nav className="hidden md:flex items-center gap-5 text-sm font-bold text-[#BABABA]">
               <button
                 type="button"
                 onClick={() => navigateToLobbyTab('challenge')}
@@ -844,6 +863,31 @@ export function ChessApp() {
               </button>
               <button
                 type="button"
+                onClick={() => {
+                  setCoachTargetGame(null);
+                  setCoachTargetPgn(null);
+                  setCoachSessionKey((k) => k + 1);
+                  setViewMode('coach');
+                }}
+                className={`inline-flex items-center gap-1.5 hover:text-white transition-colors whitespace-nowrap shrink-0 ${
+                  viewMode === 'coach' ? 'text-white' : ''
+                }`}
+              >
+                <GraduationCap className="w-4 h-4 text-[#81B64C]" />
+                <span>{dict.navCoach}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('stats')}
+                className={`inline-flex items-center gap-1.5 hover:text-white transition-colors whitespace-nowrap shrink-0 ${
+                  viewMode === 'stats' ? 'text-white' : ''
+                }`}
+              >
+                <TrendingUp className="w-4 h-4 text-[#81B64C]" />
+                <span>{dict.navStats}</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => navigateToLobbyTab('leaderboard')}
                 className={`inline-flex items-center gap-1.5 hover:text-white transition-colors whitespace-nowrap shrink-0 ${
                   viewMode === 'lobby' && lobbyTab === 'leaderboard' ? 'text-white' : ''
@@ -852,17 +896,6 @@ export function ChessApp() {
                 <Trophy className="w-4 h-4 text-[#E6912C]" />
                 <span>{dict.navLeaderboard}</span>
               </button>
-              {activeGame && (
-                <button
-                  type="button"
-                  onClick={() => setViewMode('game')}
-                  className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
-                    viewMode === 'game' ? 'text-[#81B64C]' : ''
-                  }`}
-                >
-                  {dict.navGame}
-                </button>
-              )}
             </nav>
           )}
 
@@ -876,7 +909,7 @@ export function ChessApp() {
               variant="compact"
             />
             {profile ? (
-              activeGame && activeGame.status === 'active' && viewMode === 'lobby' ? (
+              activeGame && activeGame.status === 'active' && viewMode !== 'game' ? (
                 <button
                   type="button"
                   onClick={() => setViewMode('game')}
@@ -906,6 +939,50 @@ export function ChessApp() {
             )}
           </div>
         </div>
+        {profile && (
+          <nav className="flex md:hidden items-center justify-around border-t border-[#3C3A36] bg-[#21201D] px-2 py-1.5 text-[11px] font-bold text-[#BABABA]">
+            <button
+              type="button"
+              onClick={() => navigateToLobbyTab('challenge')}
+              className={viewMode === 'lobby' && lobbyTab === 'challenge' ? 'text-white' : ''}
+            >
+              {dict.navPlay}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateToLobbyTab('bots')}
+              className={viewMode === 'lobby' && lobbyTab === 'bots' ? 'text-white' : ''}
+            >
+              {dict.navBots}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCoachTargetGame(null);
+                setCoachTargetPgn(null);
+                setCoachSessionKey((k) => k + 1);
+                setViewMode('coach');
+              }}
+              className={viewMode === 'coach' ? 'text-[#81B64C]' : ''}
+            >
+              {dict.navCoach}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('stats')}
+              className={viewMode === 'stats' ? 'text-[#81B64C]' : ''}
+            >
+              {dict.navStats}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigateToLobbyTab('leaderboard')}
+              className={viewMode === 'lobby' && lobbyTab === 'leaderboard' ? 'text-white' : ''}
+            >
+              {dict.navLeaderboard}
+            </button>
+          </nav>
+        )}
       </header>
 
       <main className="flex-1">
@@ -1014,6 +1091,68 @@ export function ChessApp() {
                         }
                       })
                       .catch((err: Error) => setRuntimeFatalError(err));
+                  }}
+                  onBackToLobby={() => navigateToLobbyTab()}
+                  onOpenCoachStudio={() => {
+                    setCoachTargetGame(activeGame);
+                    setCoachTargetPgn(null);
+                    setCoachSessionKey((k) => k + 1);
+                    setViewMode('coach');
+                  }}
+                />
+              </motion.div>
+            ) : viewMode === 'coach' ? (
+              <motion.div
+                key={`coach-${coachSessionKey}`}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.14 }}
+              >
+                <CoachReviewStudio
+                  myUsername={profile.username}
+                  myElo={profile.elo}
+                  lang={activeLang}
+                  initialGame={coachTargetGame}
+                  initialPgn={coachTargetPgn}
+                  savedReviews={savedReviews}
+                  onSaveReview={(review) => {
+                    if (!authUser) return;
+                    void saveGameReviewToFirestore(authUser.uid, review).catch((err: Error) =>
+                      setRuntimeFatalError(err)
+                    );
+                  }}
+                  onBackToLobby={() => navigateToLobbyTab()}
+                  onBackToGame={activeGame ? () => setViewMode('game') : undefined}
+                  onRequestOpenStats={() => setViewMode('stats')}
+                />
+              </motion.div>
+            ) : viewMode === 'stats' ? (
+              <motion.div
+                key="stats"
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.14 }}
+              >
+                <StatsDashboard
+                  profile={profile}
+                  reviews={savedReviews}
+                  onOpenReviewInCoach={(rev) => {
+                    setCoachTargetGame(null);
+                    setCoachTargetPgn({
+                      pgn: rev.pgn,
+                      playerColor: rev.playerColor,
+                      id: rev.id,
+                    });
+                    setCoachSessionKey((k) => k + 1);
+                    setViewMode('coach');
+                  }}
+                  onOpenImportPgn={() => {
+                    setCoachTargetGame(null);
+                    setCoachTargetPgn(null);
+                    setCoachSessionKey((k) => k + 1);
+                    setViewMode('coach');
                   }}
                   onBackToLobby={() => navigateToLobbyTab()}
                 />

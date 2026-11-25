@@ -169,6 +169,30 @@ export interface RecentMatchSummary {
   isBotGame: boolean;
 }
 
+export interface SavedGameReview {
+  id: string;
+  whiteUsername: string;
+  blackUsername: string;
+  playerColor: PieceColor;
+  result: 'win' | 'loss' | 'draw';
+  accuracyPct: number;
+  openingName: string;
+  openingAcc: number;
+  middlegameAcc: number;
+  endgameAcc: number;
+  brilliantCount: number;
+  greatCount: number;
+  goodCount: number;
+  inaccuracyCount: number;
+  mistakeCount: number;
+  blunderCount: number;
+  missedWinCount: number;
+  movesCount: number;
+  source: 'biochess' | 'pgn';
+  pgn: string;
+  createdAtMs: number;
+}
+
 export interface BotDefinition {
   id: BotId;
   name: string;

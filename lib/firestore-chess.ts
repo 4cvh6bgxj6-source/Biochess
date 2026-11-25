@@ -10,6 +10,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   Timestamp,
   updateDoc,
   where,
@@ -30,6 +31,7 @@ import {
   type PieceColor,
   type PlayerSummary,
   type RecentMatchSummary,
+  type SavedGameReview,
   type TimeControlId,
 } from './types';
 import {
@@ -1715,4 +1717,94 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${uid}`);
   }
+}
+
+export async function saveGameReviewToFirestore(
+  uid: string,
+  review: SavedGameReview
+): Promise<void> {
+  const safeId = review.id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+  const reviewId = safeId.length >= 4 ? safeId : `rev_${Date.now().toString(36)}`;
+  const path = `users/${uid}/reviews/${reviewId}`;
+
+  const clampPct = (v: number) => Math.max(0, Math.min(100, Math.round(v || 0)));
+  const clampCount = (v: number) => Math.max(0, Math.min(2000, Math.round(v || 0)));
+
+  const payload: SavedGameReview = {
+    id: reviewId,
+    whiteUsername: (review.whiteUsername || 'Bianco').trim().slice(0, 32) || 'Bianco',
+    blackUsername: (review.blackUsername || 'Nero').trim().slice(0, 32) || 'Nero',
+    playerColor: review.playerColor === 'b' ? 'b' : 'w',
+    result: review.result === 'win' || review.result === 'loss' ? review.result : 'draw',
+    accuracyPct: clampPct(review.accuracyPct),
+    openingName: (review.openingName || 'Apertura Libera').trim().slice(0, 80) || 'Apertura Libera',
+    openingAcc: clampPct(review.openingAcc),
+    middlegameAcc: clampPct(review.middlegameAcc),
+    endgameAcc: clampPct(review.endgameAcc),
+    brilliantCount: clampCount(review.brilliantCount),
+    greatCount: clampCount(review.greatCount),
+    goodCount: clampCount(review.goodCount),
+    inaccuracyCount: clampCount(review.inaccuracyCount),
+    mistakeCount: clampCount(review.mistakeCount),
+    blunderCount: clampCount(review.blunderCount),
+    missedWinCount: clampCount(review.missedWinCount),
+    movesCount: clampCount(review.movesCount),
+    source: review.source === 'pgn' ? 'pgn' : 'biochess',
+    pgn: String(review.pgn || '').slice(0, 8000),
+    createdAtMs: Math.max(1, Math.round(review.createdAtMs || Date.now())),
+  };
+
+  try {
+    await setDoc(doc(db, 'users', uid, 'reviews', reviewId), payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export function subscribeMyGameReviews(
+  uid: string,
+  onReviews: (reviews: SavedGameReview[]) => void,
+  onError: (err: Error) => void
+): Unsubscribe {
+  const path = `users/${uid}/reviews`;
+  const q = query(collection(db, 'users', uid, 'reviews'), orderBy('createdAtMs', 'desc'), limit(60));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: SavedGameReview[] = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: String(data.id || d.id),
+          whiteUsername: String(data.whiteUsername || 'Bianco'),
+          blackUsername: String(data.blackUsername || 'Nero'),
+          playerColor: data.playerColor === 'b' ? 'b' : 'w',
+          result: data.result === 'win' || data.result === 'loss' ? data.result : 'draw',
+          accuracyPct: typeof data.accuracyPct === 'number' ? data.accuracyPct : 0,
+          openingName: String(data.openingName || 'Apertura Libera'),
+          openingAcc: typeof data.openingAcc === 'number' ? data.openingAcc : 0,
+          middlegameAcc: typeof data.middlegameAcc === 'number' ? data.middlegameAcc : 0,
+          endgameAcc: typeof data.endgameAcc === 'number' ? data.endgameAcc : 0,
+          brilliantCount: typeof data.brilliantCount === 'number' ? data.brilliantCount : 0,
+          greatCount: typeof data.greatCount === 'number' ? data.greatCount : 0,
+          goodCount: typeof data.goodCount === 'number' ? data.goodCount : 0,
+          inaccuracyCount: typeof data.inaccuracyCount === 'number' ? data.inaccuracyCount : 0,
+          mistakeCount: typeof data.mistakeCount === 'number' ? data.mistakeCount : 0,
+          blunderCount: typeof data.blunderCount === 'number' ? data.blunderCount : 0,
+          missedWinCount: typeof data.missedWinCount === 'number' ? data.missedWinCount : 0,
+          movesCount: typeof data.movesCount === 'number' ? data.movesCount : 0,
+          source: data.source === 'pgn' ? 'pgn' : 'biochess',
+          pgn: String(data.pgn || ''),
+          createdAtMs: typeof data.createdAtMs === 'number' ? data.createdAtMs : Date.now(),
+        };
+      });
+      onReviews(list);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } catch (wrapped) {
+        onError(wrapped as Error);
+      }
+    }
+  );
 }

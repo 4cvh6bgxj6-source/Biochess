@@ -534,12 +534,122 @@
         "authorUid",
         "createdAt"
       ]
+    },
+    "SavedGameReview": {
+      "title": "SavedGameReview",
+      "description": "Engine-analyzed game review summary saved privately under a player's profile for progress tracking.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "whiteUsername": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "blackUsername": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "playerColor": {
+          "type": "string",
+          "enum": ["w", "b"]
+        },
+        "result": {
+          "type": "string",
+          "enum": ["win", "loss", "draw"]
+        },
+        "accuracyPct": {
+          "type": "number"
+        },
+        "openingName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "openingAcc": {
+          "type": "number"
+        },
+        "middlegameAcc": {
+          "type": "number"
+        },
+        "endgameAcc": {
+          "type": "number"
+        },
+        "brilliantCount": {
+          "type": "number"
+        },
+        "greatCount": {
+          "type": "number"
+        },
+        "goodCount": {
+          "type": "number"
+        },
+        "inaccuracyCount": {
+          "type": "number"
+        },
+        "mistakeCount": {
+          "type": "number"
+        },
+        "blunderCount": {
+          "type": "number"
+        },
+        "missedWinCount": {
+          "type": "number"
+        },
+        "movesCount": {
+          "type": "number"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["biochess", "pgn"]
+        },
+        "pgn": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "createdAtMs": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "whiteUsername",
+        "blackUsername",
+        "playerColor",
+        "result",
+        "accuracyPct",
+        "openingName",
+        "openingAcc",
+        "middlegameAcc",
+        "endgameAcc",
+        "brilliantCount",
+        "greatCount",
+        "goodCount",
+        "inaccuracyCount",
+        "mistakeCount",
+        "blunderCount",
+        "missedWinCount",
+        "movesCount",
+        "source",
+        "pgn",
+        "createdAtMs"
+      ]
     }
   },
   "firestore": {
     "/users/{uid}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Public player profile and ELO rating (no PII)."
+    },
+    "/users/{uid}/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/SavedGameReview" },
+      "description": "Owner-only analyzed chess game reviews and progress stats."
     },
     "/usernames/{usernameKey}": {
       "schema": { "$ref": "#/entities/UsernameClaim" },

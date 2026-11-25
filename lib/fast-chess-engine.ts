@@ -337,6 +337,38 @@ export class FastBoard {
     this.recomputeHash();
   }
 
+  public toFen(): string {
+    const pieceChars = ['', 'P', 'N', 'B', 'R', 'Q', 'K'];
+    const ranks: string[] = [];
+    for (let r = 0; r < 8; r++) {
+      let row = '';
+      let empty = 0;
+      for (let c = 0; c < 8; c++) {
+        const p = this.board[(r << 4) | c];
+        if (p === 0) {
+          empty++;
+        } else {
+          if (empty > 0) {
+            row += String(empty);
+            empty = 0;
+          }
+          const ch = pieceChars[Math.abs(p)];
+          row += p > 0 ? ch : ch.toLowerCase();
+        }
+      }
+      if (empty > 0) row += String(empty);
+      ranks.push(row);
+    }
+    let cast = '';
+    if (this.castling & 1) cast += 'K';
+    if (this.castling & 2) cast += 'Q';
+    if (this.castling & 4) cast += 'k';
+    if (this.castling & 8) cast += 'q';
+    if (!cast) cast = '-';
+    const epStr = this.ep >= 0 ? sq0x88ToAlgebraic(this.ep) : '-';
+    return `${ranks.join('/')} ${this.turn === 1 ? 'w' : 'b'} ${cast} ${epStr} 0 1`;
+  }
+
   private recomputeHash() {
     let hi = 0;
     let lo = 0;
@@ -1386,3 +1418,91 @@ export function searchBestMoves(fen: string, config: SearchConfig): RootSearchRe
     reachedDepth,
   };
 }
+
+export interface EnginePvResult {
+  scoreCpWhite: number;
+  mateIn?: number;
+  bestFrom: string;
+  bestTo: string;
+  bestPromo?: 'n' | 'b' | 'r' | 'q';
+  pv: Array<{ from: string; to: string; promo?: 'n' | 'b' | 'r' | 'q' }>;
+  reachedDepth: number;
+}
+
+/**
+ * Computes the reliable engine evaluation (always normalized to White's perspective)
+ * and extracts a multi-ply Principal Variation (PV) without inventing moves.
+ */
+export function searchPositionWithPv(
+  fen: string,
+  config: Partial<SearchConfig> = {},
+  maxPvPlies = 4
+): EnginePvResult | null {
+  const fullConfig: SearchConfig = {
+    maxDepth: config.maxDepth ?? 4,
+    budgetMs: config.budgetMs ?? 55,
+    quiescencePlies: config.quiescencePlies ?? 4,
+    style: config.style ?? 'normal',
+  };
+
+  const rootRes = searchBestMoves(fen, fullConfig);
+  if (!rootRes) return null;
+
+  const fb = new FastBoard(fen);
+  const rootColor = fb.turn; // 1 = White, -1 = Black
+  const scoreCpWhite = rootRes.scoreCp * rootColor;
+
+  let mateIn: number | undefined;
+  if (Math.abs(rootRes.scoreCp) >= MATE_SCORE - 100) {
+    const pliesToMate = Math.max(1, MATE_SCORE - Math.abs(rootRes.scoreCp));
+    const movesToMate = Math.ceil(pliesToMate / 2);
+    const sign = scoreCpWhite >= 0 ? 1 : -1;
+    mateIn = sign * movesToMate;
+  }
+
+  const pv: Array<{ from: string; to: string; promo?: 'n' | 'b' | 'r' | 'q' }> = [
+    { from: rootRes.bestFrom, to: rootRes.bestTo, promo: rootRes.bestPromo },
+  ];
+
+  // Follow principal variation deterministically using TT + fast follow-up search
+  let curFrom = rootRes.bestFrom;
+  let curTo = rootRes.bestTo;
+  let curPromo = rootRes.bestPromo;
+
+  for (let step = 1; step < maxPvPlies; step++) {
+    const fromSq = algebraicTo0x88(curFrom);
+    const toSq = algebraicTo0x88(curTo);
+    const legalMoves = fb.generatePseudoMoves(false);
+    const matched = legalMoves.find((m) => {
+      if (moveFrom(m) !== fromSq || moveTo(m) !== toSq) return false;
+      const p = fastMovePromoChar(m);
+      return !p || p === (curPromo || 'q');
+    });
+    if (!matched || !fb.makeMove(matched)) break;
+
+    const nextFen = fb.toFen();
+    const follow = searchBestMoves(nextFen, {
+      maxDepth: 2,
+      budgetMs: 14,
+      quiescencePlies: 2,
+      style: fullConfig.style,
+    });
+    if (!follow) break;
+
+    curFrom = follow.bestFrom;
+    curTo = follow.bestTo;
+    curPromo = follow.bestPromo;
+    pv.push({ from: curFrom, to: curTo, promo: curPromo });
+  }
+
+  return {
+    scoreCpWhite,
+    mateIn,
+    bestFrom: rootRes.bestFrom,
+    bestTo: rootRes.bestTo,
+    bestPromo: rootRes.bestPromo,
+    pv,
+    reachedDepth: rootRes.reachedDepth,
+  };
+}
+

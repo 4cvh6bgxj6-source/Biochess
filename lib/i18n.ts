@@ -10,6 +10,8 @@ export interface UiDictionary {
   switchGoogleAccount: string;
   navPlay: string;
   navBots: string;
+  navCoach: string;
+  navStats: string;
   navLeaderboard: string;
   navGame: string;
   backToGame: string;
@@ -68,6 +70,7 @@ export interface UiDictionary {
   finishAndReviewBtn: string;
   trainingComplete: string;
   reviewTag: string;
+  analyzeWithCoach: string;
 }
 
 const IT: UiDictionary = {
@@ -82,6 +85,8 @@ const IT: UiDictionary = {
   switchGoogleAccount: 'Usa un altro account Google',
   navPlay: 'Gioca',
   navBots: 'Bot & Coach',
+  navCoach: 'Coach',
+  navStats: 'Statistiche',
   navLeaderboard: 'Classifica',
   navGame: 'Partita',
   backToGame: 'Torna in partita',
@@ -140,6 +145,7 @@ const IT: UiDictionary = {
   finishAndReviewBtn: 'Termina e Revisiona',
   trainingComplete: 'Allenamento completato',
   reviewTag: 'Revisione Live',
+  analyzeWithCoach: 'Revisione Coach',
 };
 
 const EN: UiDictionary = {
@@ -154,6 +160,8 @@ const EN: UiDictionary = {
   switchGoogleAccount: 'Use another Google account',
   navPlay: 'Play',
   navBots: 'Bots & Coach',
+  navCoach: 'Coach',
+  navStats: 'Stats',
   navLeaderboard: 'Leaderboard',
   navGame: 'Game',
   backToGame: 'Back to game',
@@ -212,6 +220,7 @@ const EN: UiDictionary = {
   finishAndReviewBtn: 'Finish & Review',
   trainingComplete: 'Training completed',
   reviewTag: 'Live Review',
+  analyzeWithCoach: 'Coach Review',
 };
 
 const ES: UiDictionary = {
