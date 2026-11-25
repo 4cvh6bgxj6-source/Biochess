@@ -12,6 +12,7 @@ export interface UiDictionary {
   navBots: string;
   navCoach: string;
   navStats: string;
+  navStyle: string;
   navLeaderboard: string;
   navGame: string;
   backToGame: string;
@@ -87,6 +88,7 @@ const IT: UiDictionary = {
   navBots: 'Bot & Coach',
   navCoach: 'Coach',
   navStats: 'Statistiche',
+  navStyle: 'Stile',
   navLeaderboard: 'Classifica',
   navGame: 'Partita',
   backToGame: 'Torna in partita',
@@ -162,6 +164,7 @@ const EN: UiDictionary = {
   navBots: 'Bots & Coach',
   navCoach: 'Coach',
   navStats: 'Stats',
+  navStyle: 'Style',
   navLeaderboard: 'Leaderboard',
   navGame: 'Game',
   backToGame: 'Back to game',

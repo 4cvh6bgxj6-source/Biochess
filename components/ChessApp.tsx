@@ -67,6 +67,8 @@ import { CoachReviewStudio } from './CoachReviewStudio';
 import { StatsDashboard } from './StatsDashboard';
 import { IncomingChallengeToast } from './IncomingChallengeToast';
 import { LanguagePicker } from './LanguagePicker';
+import { BoardThemeProvider } from './BoardThemeContext';
+import { BoardStylePicker } from './BoardStylePicker';
 
 export function ChessApp() {
   const [authReady, setAuthReady] = useState(false);
@@ -815,10 +817,11 @@ export function ChessApp() {
   }
 
   return (
+    <BoardThemeProvider>
     <div className="min-h-screen flex flex-col bg-[#302E2B] text-[#F3F3F2]">
       {/* Top Bar Contract: 3 zones separated by gap-8 */}
       <header className="sticky top-0 z-40 border-b border-[#3C3A36] bg-[#262421]">
-        <div className="max-w-[1160px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-8">
+        <div className="max-w-[1160px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3 sm:gap-6 lg:gap-8">
           {/* Zone 1: BioChess Emblem + Wordmark */}
           <button
             type="button"
@@ -899,8 +902,9 @@ export function ChessApp() {
             </nav>
           )}
 
-          {/* Zone 3: Language selector + 1 primary user action */}
+          {/* Zone 3: Style selector + Language selector + 1 primary user action */}
           <div className="flex items-center gap-2 shrink-0">
+            <BoardStylePicker label={dict.navStyle} lang={activeLang} />
             <LanguagePicker
               lang={activeLang}
               country={activeCountry}
@@ -1265,5 +1269,6 @@ export function ChessApp() {
         />
       )}
     </div>
+    </BoardThemeProvider>
   );
 }

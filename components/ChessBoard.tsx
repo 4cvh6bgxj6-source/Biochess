@@ -4,8 +4,10 @@ import React, { useMemo, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
 import type { PieceSymbol, Square } from 'chess.js';
 import { motion } from 'motion/react';
+import { getBoardTheme, type BoardThemeId, type PieceSetId } from '@/lib/board-themes';
 import type { GameMove, MoveQuality, PieceColor } from '@/lib/types';
 import { soundFX } from '@/lib/sound';
+import { useBoardStyle } from './BoardThemeContext';
 import { ChessPiece } from './ChessPiece';
 import { MoveQualityBadge } from './MoveQualityBadge';
 
@@ -36,6 +38,8 @@ interface ChessBoardProps {
   onArrowsChange?: (arrows: BoardArrow[]) => void;
   onHighlightsChange?: (highlights: BoardHighlight[]) => void;
   onMove: (from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n') => void;
+  boardThemeId?: BoardThemeId;
+  pieceSetId?: PieceSetId;
 }
 
 interface TrackedPiece {
@@ -303,7 +307,11 @@ export function ChessBoard({
   onArrowsChange,
   onHighlightsChange,
   onMove,
+  boardThemeId: boardThemeOverride,
+  pieceSetId: pieceSetOverride,
 }: ChessBoardProps) {
+  const { boardTheme: ctxBoardTheme } = useBoardStyle();
+  const boardTheme = boardThemeOverride ? getBoardTheme(boardThemeOverride) : ctxBoardTheme;
   const boardRef = useRef<HTMLDivElement>(null);
   const justDrewRef = useRef(false);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
@@ -559,10 +567,23 @@ export function ChessBoard({
             const showRankLabel = fIdx === 0;
             const showFileLabel = rIdx === 7;
 
-            let bgClass = isLight ? 'bg-[#EEEED2]' : 'bg-[#769656]';
-            if (isSelected || isLastMove) {
-              bgClass = isLight ? 'bg-[#F5F682]' : 'bg-[#BACA44]';
-            }
+            const squareColor =
+              isSelected || isLastMove
+                ? isLight
+                  ? boardTheme.highlightLight
+                  : boardTheme.highlightDark
+                : isLight
+                  ? boardTheme.light
+                  : boardTheme.dark;
+
+            const squareTexture =
+              !isSelected && !isLastMove
+                ? isLight
+                  ? boardTheme.lightTexture
+                  : boardTheme.darkTexture
+                : undefined;
+
+            const coordColor = isLight ? boardTheme.dark : boardTheme.light;
 
             return (
               <button
@@ -582,7 +603,12 @@ export function ChessBoard({
                   }
                   setDragFrom(null);
                 }}
-                className={`relative flex items-center justify-center w-full h-full p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#81B64C] ${bgClass}`}
+                style={{
+                  backgroundColor: squareColor,
+                  backgroundImage: squareTexture,
+                  backgroundSize: boardTheme.id === 'sand' ? '12px 12px' : undefined,
+                }}
+                className="relative flex items-center justify-center w-full h-full p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#81B64C]"
               >
                 {userHighlight && (
                   <span
@@ -600,9 +626,8 @@ export function ChessBoard({
 
                 {showRankLabel && (
                   <span
-                    className={`absolute top-0.5 left-1 text-[11px] font-bold leading-none pointer-events-none ${
-                      isLight ? 'text-[#769656]' : 'text-[#EEEED2]'
-                    }`}
+                    style={{ color: coordColor }}
+                    className="absolute top-0.5 left-1 text-[11px] font-bold leading-none pointer-events-none"
                   >
                     {rank}
                   </span>
@@ -610,9 +635,8 @@ export function ChessBoard({
 
                 {showFileLabel && (
                   <span
-                    className={`absolute bottom-0.5 right-1 text-[11px] font-bold leading-none pointer-events-none ${
-                      isLight ? 'text-[#769656]' : 'text-[#EEEED2]'
-                    }`}
+                    style={{ color: coordColor }}
+                    className="absolute bottom-0.5 right-1 text-[11px] font-bold leading-none pointer-events-none"
                   >
                     {file}
                   </span>
@@ -703,7 +727,7 @@ export function ChessBoard({
                       : 'cursor-default'
                 }`}
               >
-                <ChessPiece type={p.type} color={p.color} />
+                <ChessPiece type={p.type} color={p.color} pieceSet={pieceSetOverride} />
               </div>
             </motion.div>
           );
@@ -764,7 +788,7 @@ export function ChessBoard({
                           : 'Cavallo'
                   }`}
                 >
-                  <ChessPiece type={promo} color={pendingPromotion.color} />
+                  <ChessPiece type={promo} color={pendingPromotion.color} pieceSet={pieceSetOverride} />
                 </button>
               ))}
             </div>
