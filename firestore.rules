@@ -256,19 +256,28 @@ service cloud.firestore {
 
     function isValidEloSettlement(inc, ext) {
       return (
-        // Win: +50 ELO, +1 win
+        // Win: +50 ELO (standard) or +20 ELO (timeout), +1 win (capped at 10000)
         (
           inc.wins == ext.wins + 1 &&
           inc.losses == ext.losses &&
           inc.draws == ext.draws &&
-          inc.elo == ext.elo + 50
+          (
+            inc.elo == ext.elo + 50 ||
+            inc.elo == ext.elo + 20 ||
+            (ext.elo > 9950 && inc.elo == 10000)
+          )
         ) ||
-        // Loss: -76 ELO (floor 0), +1 loss
+        // Loss: -76 ELO (standard) or -5 ELO (timeout) (floor 0), +1 loss
         (
           inc.losses == ext.losses + 1 &&
           inc.wins == ext.wins &&
           inc.draws == ext.draws &&
-          (inc.elo == ext.elo - 76 || (ext.elo < 76 && inc.elo == 0))
+          (
+            inc.elo == ext.elo - 76 ||
+            (ext.elo < 76 && inc.elo == 0) ||
+            inc.elo == ext.elo - 5 ||
+            (ext.elo < 5 && inc.elo == 0)
+          )
         ) ||
         // Draw: +0 ELO, +1 draw
         (
@@ -353,7 +362,7 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['online', 'activeGameId', 'updatedAt']) ||
           // Action: Update language and country flag
           incoming().diff(existing()).affectedKeys().hasOnly(['lang', 'country', 'updatedAt']) ||
-          // Action: Settle completed match ELO (+50 win / -76 loss / 0 draw)
+          // Action: Settle completed match ELO (+50/+20 win / -76/-5 loss / 0 draw)
           (
             incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'wins', 'losses', 'draws', 'activeGameId', 'updatedAt']) &&
             isValidEloSettlement(incoming(), existing())

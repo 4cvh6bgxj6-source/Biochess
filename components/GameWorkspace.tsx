@@ -20,6 +20,7 @@ import {
   VolumeX,
 } from 'lucide-react';
 import {
+  isTrainingBot,
   TIME_CONTROLS,
   type GameMove,
   type GameState,
@@ -258,6 +259,25 @@ export function GameWorkspace({
     return dict.defeat;
   }, [game.status, game.winner, myColor, dict, isDummyTraining]);
 
+  const eloDeltaBadge = useMemo(() => {
+    if (game.status === 'active') return null;
+    if (game.isBotGame && isTrainingBot(game.botId)) return null;
+    if (game.winner === 'draw' || game.winner === null) {
+      return { text: '0 ELO', className: 'text-[#9E9D9A]' };
+    }
+    const isTimeout = game.status === 'timeout';
+    if (game.winner === myColor) {
+      return {
+        text: isTimeout ? '+20 ELO' : '+50 ELO',
+        className: 'text-[#81B64C]',
+      };
+    }
+    return {
+      text: isTimeout ? '-5 ELO' : '-76 ELO',
+      className: 'text-[#F16562]',
+    };
+  }, [game.status, game.isBotGame, game.botId, game.winner, myColor]);
+
   function handleStartReview() {
     if (game.moves.length === 0) return;
     if (errorMoveIndices.length > 0) {
@@ -378,7 +398,14 @@ export function GameWorkspace({
           {!isActive && (
             <div className="p-4 bg-[#2E2B27] border-b border-[#3C3A36]">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-lg font-extrabold text-white">{winnerLabel}</h2>
+                <div className="flex items-baseline gap-2 min-w-0">
+                  <h2 className="text-lg font-extrabold text-white">{winnerLabel}</h2>
+                  {eloDeltaBadge && (
+                    <span className={`text-xs font-extrabold font-mono-tabular ${eloDeltaBadge.className}`}>
+                      {eloDeltaBadge.text}
+                    </span>
+                  )}
+                </div>
                 {reviewData && (
                   <span className="px-2.5 py-1 rounded bg-[#21201D] border border-[#81B64C]/50 text-xs font-bold text-[#81B64C] font-mono-tabular shrink-0">
                     {dict.accuracyLabel}: {reviewData.accuracyPct}%

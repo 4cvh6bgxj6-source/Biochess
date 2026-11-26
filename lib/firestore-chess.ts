@@ -602,7 +602,7 @@ export function subscribeMyGames(
   const q = query(
     collection(db, 'games'),
     where('participantUids', 'array-contains', uid),
-    limit(200)
+    limit(500)
   );
   return onSnapshot(
     q,
@@ -1800,22 +1800,22 @@ export async function requestOrAcceptRematchInFirestore(
   }
 }
 
-export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot): Promise<void> {
-  if (gameDoc.status === 'active') return;
+export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot): Promise<boolean> {
+  if (gameDoc.status === 'active') return false;
   const isWhite = !gameDoc.whiteIsBot && gameDoc.whiteUid === uid;
   const isBlack = !gameDoc.blackIsBot && gameDoc.blackUid === uid;
-  if (!isWhite && !isBlack) return;
-  if ((isWhite && gameDoc.whiteEloApplied) || (isBlack && gameDoc.blackEloApplied)) return;
+  if (!isWhite && !isBlack) return false;
+  if ((isWhite && gameDoc.whiteEloApplied) || (isBlack && gameDoc.blackEloApplied)) return true;
 
   try {
     const [userSnap, latestGameSnap] = await Promise.all([
       getDoc(doc(db, 'users', uid)),
       getDoc(doc(db, 'games', gameDoc.id)),
     ]);
-    if (!userSnap.exists() || !latestGameSnap.exists()) return;
+    if (!userSnap.exists() || !latestGameSnap.exists()) return false;
     const latestGame = mapGameDoc(latestGameSnap.id, latestGameSnap.data());
-    if (latestGame.status === 'active') return;
-    if ((isWhite && latestGame.whiteEloApplied) || (isBlack && latestGame.blackEloApplied)) return;
+    if (latestGame.status === 'active') return false;
+    if ((isWhite && latestGame.whiteEloApplied) || (isBlack && latestGame.blackEloApplied)) return true;
 
     const batch = writeBatch(db);
 
@@ -1831,7 +1831,7 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
         updatedAt: serverTimestamp(),
       });
       await batch.commit();
-      return;
+      return true;
     }
 
     const u = userSnap.data();
@@ -1841,6 +1841,10 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
     const curDraws = typeof u.draws === 'number' && Number.isFinite(u.draws) ? Math.max(0, Math.round(u.draws)) : 0;
 
     const myColor: PieceColor = isWhite ? 'w' : 'b';
+    const isTimeout = latestGame.status === 'timeout';
+    const winDelta = isTimeout ? 20 : 50;
+    const lossDelta = isTimeout ? 5 : 76;
+
     let nextElo = curElo;
     let nextWins = curWins;
     let nextLosses = curLosses;
@@ -1850,10 +1854,10 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
       nextDraws += 1;
     } else if (latestGame.winner === myColor) {
       nextWins += 1;
-      nextElo = Math.min(10000, curElo + 50);
+      nextElo = Math.min(10000, curElo + winDelta);
     } else {
       nextLosses += 1;
-      nextElo = Math.max(0, curElo - 76);
+      nextElo = Math.max(0, curElo - lossDelta);
     }
 
     batch.update(doc(db, 'users', uid), {
@@ -1869,6 +1873,7 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
       updatedAt: serverTimestamp(),
     });
     await batch.commit();
+    return true;
   } catch (error) {
     // Ignore concurrent settlement from another tab/listener if already applied on server
     try {
@@ -1876,7 +1881,7 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
       if (checkSnap.exists()) {
         const checked = mapGameDoc(checkSnap.id, checkSnap.data());
         if ((isWhite && checked.whiteEloApplied) || (isBlack && checked.blackEloApplied)) {
-          return;
+          return true;
         }
       }
     } catch {

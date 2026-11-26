@@ -120,6 +120,7 @@ export function ChessApp() {
   });
 
   const settlingGameIdsRef = useRef<Set<string>>(new Set());
+  const settledGameIdsRef = useRef<Set<string>>(new Set());
   const botTurnKeyRef = useRef<string>('');
   const latestGameRef = useRef<GameState | null>(null);
   const liveTimesRef = useRef<{ w: number; b: number }>({ w: 0, b: 0 });
@@ -159,6 +160,33 @@ export function ChessApp() {
 
   const handleListenerError = useCallback((err: Error) => {
     setRuntimeFatalError(err);
+  }, []);
+
+  const attemptSettleGameElo = useCallback((uid: string, gameDoc: GameDocSnapshot) => {
+    if (gameDoc.status === 'active') return;
+    const isWhite = !gameDoc.whiteIsBot && gameDoc.whiteUid === uid;
+    const isBlack = !gameDoc.blackIsBot && gameDoc.blackUid === uid;
+    if (!isWhite && !isBlack) return;
+    if ((isWhite && gameDoc.whiteEloApplied) || (isBlack && gameDoc.blackEloApplied)) {
+      settledGameIdsRef.current.add(gameDoc.id);
+      return;
+    }
+    if (settledGameIdsRef.current.has(gameDoc.id) || settlingGameIdsRef.current.has(gameDoc.id)) {
+      return;
+    }
+    settlingGameIdsRef.current.add(gameDoc.id);
+    void settleMyEloForGame(uid, gameDoc)
+      .then((didSettle) => {
+        if (didSettle) {
+          settledGameIdsRef.current.add(gameDoc.id);
+        }
+      })
+      .catch((err: Error) => {
+        console.error('ELO settlement warning:', err);
+      })
+      .finally(() => {
+        settlingGameIdsRef.current.delete(gameDoc.id);
+      });
   }, []);
 
   const profileLoaded = Boolean(authUser && loadedProfileUid === authUser.uid);
@@ -219,6 +247,8 @@ export function ChessApp() {
         setViewMode('lobby');
         hasRestoredInitialGameRef.current = false;
         knownActivePvpIdsRef.current = new Set();
+        settlingGameIdsRef.current.clear();
+        settledGameIdsRef.current.clear();
       }
     });
     return () => unsub();
@@ -376,13 +406,7 @@ export function ChessApp() {
         }
 
         for (const finGame of unappliedFinished) {
-          if (!settlingGameIdsRef.current.has(finGame.id)) {
-            settlingGameIdsRef.current.add(finGame.id);
-            void settleMyEloForGame(uid, finGame).catch((err: Error) => {
-              settlingGameIdsRef.current.delete(finGame.id);
-              console.error('ELO settlement warning:', err);
-            });
-          }
+          attemptSettleGameElo(uid, finGame);
         }
       },
       handleListenerError
@@ -398,7 +422,14 @@ export function ChessApp() {
       unsubMyGames();
       unsubMyReviews();
     };
-  }, [authReady, authUser, hasProfile, handleListenerError]);
+  }, [authReady, authUser, hasProfile, handleListenerError, attemptSettleGameElo]);
+
+  // Settle ELO immediately when activeGameDoc finishes (even if user has >500 historical games)
+  useEffect(() => {
+    if (!authReady || !authUser || !hasProfile || !activeGameDoc) return;
+    if (activeGameDoc.status === 'active') return;
+    attemptSettleGameElo(authUser.uid, activeGameDoc);
+  }, [authReady, authUser, hasProfile, activeGameDoc, attemptSettleGameElo]);
 
   // Subscribe to active game room (game doc + moves + chat)
   useEffect(() => {
