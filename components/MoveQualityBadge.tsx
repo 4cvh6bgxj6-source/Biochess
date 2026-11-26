@@ -5,7 +5,7 @@ import { BookOpen, Crown } from 'lucide-react';
 import type { MoveQuality } from '@/lib/types';
 
 export const QUALITY_META: Record<
-  Exclude<MoveQuality, 'neutral'>,
+  MoveQuality,
   {
     symbol: string;
     title: string;
@@ -47,6 +47,14 @@ export const QUALITY_META: Record<
     textClass: 'text-[#9ED16A]',
     borderClass: 'border-[#81B64C]/45',
   },
+  neutral: {
+    symbol: '?!',
+    title: 'Imprecisione',
+    subtitle: 'Leggermente inferiore alla migliore',
+    bgClass: 'bg-[#C99D28]',
+    textClass: 'text-[#E7C666]',
+    borderClass: 'border-[#C99D28]/45',
+  },
   mistake: {
     symbol: '?',
     title: 'Mistake',
@@ -71,8 +79,9 @@ interface MoveQualityBadgeProps {
 }
 
 export function MoveQualityBadge({ quality, size = 'sm' }: MoveQualityBadgeProps) {
-  if (!quality || quality === 'neutral') return null;
+  if (!quality) return null;
   const meta = QUALITY_META[quality];
+  if (!meta) return null;
 
   const sizeClasses =
     size === 'board'

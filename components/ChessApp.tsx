@@ -702,7 +702,7 @@ export function ChessApp() {
           }
           console.error('Bot move warning:', err);
         });
-    }, 280);
+    }, 620);
 
     return () => clearTimeout(timer);
   }, [authUid, botGameId, botGameStatus, botGameEnabled, botTurnNow, botMovesLen, botMovesSynced]);

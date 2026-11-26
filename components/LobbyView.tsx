@@ -684,6 +684,10 @@ export function LobbyView({
                     <span>Buona</span>
                   </span>
                   <span className="inline-flex items-center gap-1">
+                    <MoveQualityBadge quality="neutral" size="sm" />
+                    <span>Imprecisione</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1">
                     <MoveQualityBadge quality="mistake" size="sm" />
                     <span>Mistake</span>
                   </span>

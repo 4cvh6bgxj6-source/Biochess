@@ -56,6 +56,334 @@ function orderMoves(moves: Move[]): Move[] {
   return moves.sort((a, b) => scoreMoveOrder(b) - scoreMoveOrder(a));
 }
 
+type BoardMatrix = ReturnType<Chess['board']>;
+
+const SQ_FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+
+function algebraicToRC(sq: string): { r: number; c: number } {
+  const c = SQ_FILES.indexOf(sq[0]);
+  const r = 8 - parseInt(sq[1], 10);
+  return { r, c };
+}
+
+function rcToAlgebraic(r: number, c: number): string {
+  return `${SQ_FILES[c]}${8 - r}`;
+}
+
+function cloneBoardMatrix(board: BoardMatrix): BoardMatrix {
+  return board.map((row) => row.map((cell) => (cell ? { ...cell } : null)));
+}
+
+function isInsideBoard(r: number, c: number): boolean {
+  return r >= 0 && r < 8 && c >= 0 && c < 8;
+}
+
+function hasAnyAttacker(
+  board: BoardMatrix,
+  tr: number,
+  tc: number,
+  side: PieceColor
+): boolean {
+  // Pawns attacking (tr, tc): White pawns attack from r+1, Black pawns from r-1
+  const pawnFromR = side === 'w' ? tr + 1 : tr - 1;
+  for (const dc of [-1, 1]) {
+    const pc = tc + dc;
+    if (isInsideBoard(pawnFromR, pc)) {
+      const p = board[pawnFromR][pc];
+      if (p && p.color === side && p.type === 'p') return true;
+    }
+  }
+
+  // Knights
+  const knightSteps = [
+    [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+    [1, -2], [1, 2], [2, -1], [2, 1],
+  ];
+  for (const [dr, dc] of knightSteps) {
+    const nr = tr + dr;
+    const nc = tc + dc;
+    if (isInsideBoard(nr, nc)) {
+      const p = board[nr][nc];
+      if (p && p.color === side && p.type === 'n') return true;
+    }
+  }
+
+  // Diagonal sliders (Bishop / Queen)
+  for (const [dr, dc] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+    let nr = tr + dr;
+    let nc = tc + dc;
+    while (isInsideBoard(nr, nc)) {
+      const p = board[nr][nc];
+      if (p) {
+        if (p.color === side && (p.type === 'b' || p.type === 'q')) return true;
+        break;
+      }
+      nr += dr;
+      nc += dc;
+    }
+  }
+
+  // Orthogonal sliders (Rook / Queen)
+  for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+    let nr = tr + dr;
+    let nc = tc + dc;
+    while (isInsideBoard(nr, nc)) {
+      const p = board[nr][nc];
+      if (p) {
+        if (p.color === side && (p.type === 'r' || p.type === 'q')) return true;
+        break;
+      }
+      nr += dr;
+      nc += dc;
+    }
+  }
+
+  // King
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = tr + dr;
+      const nc = tc + dc;
+      if (isInsideBoard(nr, nc)) {
+        const p = board[nr][nc];
+        if (p && p.color === side && p.type === 'k') return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function findLeastValuableAttacker(
+  board: BoardMatrix,
+  tr: number,
+  tc: number,
+  side: PieceColor,
+  allowedFromSquares?: Set<string>
+): { r: number; c: number; type: PieceSymbol } | null {
+  let best: { r: number; c: number; type: PieceSymbol } | null = null;
+  let bestVal = Infinity;
+
+  const consider = (r: number, c: number, type: PieceSymbol) => {
+    if (allowedFromSquares && !allowedFromSquares.has(rcToAlgebraic(r, c))) return;
+    const val = PIECE_VALUES[type];
+    if (val < bestVal) {
+      bestVal = val;
+      best = { r, c, type };
+    }
+  };
+
+  // Pawns
+  const pawnFromR = side === 'w' ? tr + 1 : tr - 1;
+  for (const dc of [-1, 1]) {
+    const pc = tc + dc;
+    if (isInsideBoard(pawnFromR, pc)) {
+      const p = board[pawnFromR][pc];
+      if (p && p.color === side && p.type === 'p') consider(pawnFromR, pc, 'p');
+    }
+  }
+
+  // Knights
+  const knightSteps = [
+    [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+    [1, -2], [1, 2], [2, -1], [2, 1],
+  ];
+  for (const [dr, dc] of knightSteps) {
+    const nr = tr + dr;
+    const nc = tc + dc;
+    if (isInsideBoard(nr, nc)) {
+      const p = board[nr][nc];
+      if (p && p.color === side && p.type === 'n') consider(nr, nc, 'n');
+    }
+  }
+
+  // Diagonal sliders
+  for (const [dr, dc] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+    let nr = tr + dr;
+    let nc = tc + dc;
+    while (isInsideBoard(nr, nc)) {
+      const p = board[nr][nc];
+      if (p) {
+        if (p.color === side && (p.type === 'b' || p.type === 'q')) {
+          consider(nr, nc, p.type);
+        }
+        break;
+      }
+      nr += dr;
+      nc += dc;
+    }
+  }
+
+  // Orthogonal sliders
+  for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+    let nr = tr + dr;
+    let nc = tc + dc;
+    while (isInsideBoard(nr, nc)) {
+      const p = board[nr][nc];
+      if (p) {
+        if (p.color === side && (p.type === 'r' || p.type === 'q')) {
+          consider(nr, nc, p.type);
+        }
+        break;
+      }
+      nr += dr;
+      nc += dc;
+    }
+  }
+
+  // King
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = tr + dr;
+      const nc = tc + dc;
+      if (isInsideBoard(nr, nc)) {
+        const p = board[nr][nc];
+        if (p && p.color === side && p.type === 'k') consider(nr, nc, 'k');
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Static Exchange Evaluation (SEE) on square (targetR, targetC):
+ * Returns how many centipawns `attackerColor` nets by initiating optimal captures on that square (>= 0).
+ */
+function computeSeeGainOnSquare(
+  sourceBoard: BoardMatrix,
+  targetR: number,
+  targetC: number,
+  attackerColor: PieceColor,
+  legalFirstFromSquares?: Set<string>
+): number {
+  const targetPiece = sourceBoard[targetR]?.[targetC];
+  if (!targetPiece || targetPiece.color === attackerColor || targetPiece.type === 'k') {
+    return 0;
+  }
+
+  const board = cloneBoardMatrix(sourceBoard);
+  const firstAttacker = findLeastValuableAttacker(
+    board,
+    targetR,
+    targetC,
+    attackerColor,
+    legalFirstFromSquares
+  );
+  if (!firstAttacker) return 0;
+
+  const gain: number[] = [PIECE_VALUES[targetPiece.type]];
+  let pieceOnTarget: PieceSymbol = firstAttacker.type;
+  board[firstAttacker.r][firstAttacker.c] = null;
+
+  let side: PieceColor = attackerColor === 'w' ? 'b' : 'w';
+  for (let depth = 1; depth < 16; depth++) {
+    const nextAtt = findLeastValuableAttacker(board, targetR, targetC, side);
+    if (!nextAtt) break;
+
+    if (nextAtt.type === 'k') {
+      const otherSide: PieceColor = side === 'w' ? 'b' : 'w';
+      if (hasAnyAttacker(board, targetR, targetC, otherSide)) {
+        break;
+      }
+    }
+
+    gain.push(PIECE_VALUES[pieceOnTarget] - gain[depth - 1]);
+    pieceOnTarget = nextAtt.type;
+    board[nextAtt.r][nextAtt.c] = null;
+    side = side === 'w' ? 'b' : 'w';
+  }
+
+  for (let d = gain.length - 1; d > 0; d--) {
+    gain[d - 1] = -Math.max(-gain[d - 1], gain[d]);
+  }
+
+  return Math.max(0, gain[0]);
+}
+
+/**
+ * Checks whether a move genuinely sacrifices >= 180cp of material via Static Exchange Evaluation (SEE),
+ * either by placing the moved piece on a square where the opponent profitably captures it,
+ * or by leaving another high-value piece newly/profitably en prise.
+ */
+export function detectGenuineSacrifice(
+  fenBefore: string,
+  from: string,
+  to: string,
+  promotion?: 'q' | 'r' | 'b' | 'n'
+): boolean {
+  try {
+    const chess = new Chess(fenBefore);
+    if (chess.moveNumber() < 4) return false;
+
+    const perspective = chess.turn();
+    const oppColor: PieceColor = perspective === 'w' ? 'b' : 'w';
+    const targetPromo = promotion || 'q';
+
+    const legalMoves = chess.moves({ verbose: true });
+    const played = legalMoves.find(
+      (m) => m.from === from && m.to === to && (!m.promotion || m.promotion === targetPromo)
+    );
+    if (!played) return false;
+    if (played.promotion || PIECE_VALUES[played.piece] < 300) return false;
+
+    const capturedVal = played.captured ? PIECE_VALUES[played.captured] : 0;
+    const boardBefore = chess.board();
+
+    chess.move(played);
+    if (chess.isCheckmate()) return false;
+
+    const oppMoves = chess.moves({ verbose: true });
+    const legalCapsByTarget = new Map<string, Set<string>>();
+    for (const om of oppMoves) {
+      if (!om.captured) continue;
+      let set = legalCapsByTarget.get(om.to);
+      if (!set) {
+        set = new Set<string>();
+        legalCapsByTarget.set(om.to, set);
+      }
+      set.add(om.from);
+    }
+
+    if (legalCapsByTarget.size === 0) return false;
+
+    const boardAfter = chess.board();
+
+    // 1) Direct sacrifice on destination square `to`
+    const toLegalAttackers = legalCapsByTarget.get(to);
+    if (toLegalAttackers) {
+      const { r, c } = algebraicToRC(to);
+      const seeOnTo = computeSeeGainOnSquare(boardAfter, r, c, oppColor, toLegalAttackers);
+      if (capturedVal - seeOnTo <= -180) {
+        return true;
+      }
+    }
+
+    // 2) Counter-attack / discovered sacrifice leaving another friendly piece profitably capturable
+    for (const [sq, legalFroms] of legalCapsByTarget.entries()) {
+      if (sq === to) continue;
+      const { r, c } = algebraicToRC(sq);
+      const victim = boardAfter[r]?.[c];
+      if (!victim || victim.color !== perspective || PIECE_VALUES[victim.type] < 300) {
+        continue;
+      }
+      const seeAfter = computeSeeGainOnSquare(boardAfter, r, c, oppColor, legalFroms);
+      if (capturedVal - seeAfter > -180) continue;
+
+      const seeBefore = computeSeeGainOnSquare(boardBefore, r, c, oppColor);
+      // Either this move newly exposed the piece, or deliberately left a Rook/Queen en prise for tactical compensation
+      if (seeAfter > seeBefore + 140 || (seeAfter >= 450 && !played.captured)) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export function evaluatePlayedMove(
   fenBefore: string,
   from: string,
@@ -64,7 +392,6 @@ export function evaluatePlayedMove(
   lastMove?: { to: string; captured?: string }
 ): { quality: MoveQuality; cpLoss: number } {
   const chess = new Chess(fenBefore);
-  const perspective = chess.turn();
   const legalMoves = chess.moves({ verbose: true });
 
   if (legalMoves.length === 0) {
@@ -82,17 +409,7 @@ export function evaluatePlayedMove(
     return { quality: 'neutral', cpLoss: 0 };
   }
 
-  const materialBefore = getMaterialBalance(chess, perspective);
   chess.move(playedMoveObj);
-  const materialAfter = getMaterialBalance(chess, perspective);
-  const oppCaptures = chess.moves({ verbose: true });
-  let worstOppCapture = 0;
-  for (const r of oppCaptures) {
-    if (r.captured && PIECE_VALUES[r.captured] > worstOppCapture) {
-      worstOppCapture = PIECE_VALUES[r.captured];
-    }
-  }
-  const immediateNetCapture = materialAfter - materialBefore - worstOppCapture;
   const isCheckmatePlayed = chess.isCheckmate();
   chess.undo();
 
@@ -141,15 +458,45 @@ export function evaluatePlayedMove(
     return { quality: 'mistake', cpLoss };
   }
 
-  const isMaterialSacrifice =
-    immediateNetCapture <= -180 && PIECE_VALUES[playedMoveObj.piece] >= 300;
+  // Check Brilliant (!!): genuine SEE sacrifice + verified depth-5 soundness + not already winning without it
   if (
-    cpLoss <= 25 &&
-    isMaterialSacrifice &&
-    (playedScore >= 120 || playedScore >= 25000) &&
-    bestScore - secondBestScore >= 70
+    cpLoss <= 30 &&
+    (playedScore >= 50 || playedScore >= 25000) &&
+    secondBestScore < 750 &&
+    detectGenuineSacrifice(fenBefore, from, to, promotion)
   ) {
-    return { quality: 'brilliant', cpLoss };
+    const verifyRes = searchBestMoves(fenBefore, {
+      maxDepth: 5,
+      budgetMs: 110,
+      quiescencePlies: 6,
+    });
+    if (verifyRes && verifyRes.ranked.length > 0) {
+      const vBest = verifyRes.ranked[0].scoreCp;
+      const vSecond = verifyRes.ranked[1]?.scoreCp ?? vBest;
+      const vPlayedEntry = verifyRes.ranked.find(
+        (e) =>
+          e.from === from &&
+          e.to === to &&
+          (!e.promo || e.promo === targetPromo)
+      );
+      const vPlayed = vPlayedEntry ? vPlayedEntry.scoreCp : vBest - 120;
+      const vCpLoss = Math.max(0, Math.round(vBest - vPlayed));
+
+      if (
+        vCpLoss <= 15 &&
+        (vPlayed >= 80 || vPlayed >= 25000) &&
+        vSecond < 750 &&
+        vBest - vSecond >= 85
+      ) {
+        return { quality: 'brilliant', cpLoss: vCpLoss };
+      }
+      if (vCpLoss >= 250) {
+        return { quality: 'blunder', cpLoss: vCpLoss };
+      }
+      if (vCpLoss >= 100) {
+        return { quality: 'mistake', cpLoss: vCpLoss };
+      }
+    }
   }
 
   const gap = bestScore - secondBestScore;
@@ -159,12 +506,19 @@ export function evaluatePlayedMove(
   const isImmediateRecapture = Boolean(
     lastMove?.captured && playedMoveObj.captured && playedMoveObj.to === lastMove.to
   );
-  const isObviousFreeCapture =
-    isCapture &&
-    !givesCheck &&
-    immediateNetCapture >= 100 &&
-    secondBestScore > -120 &&
-    playedScore < 25000;
+
+  // Check if this is an obvious free capture using accurate board state rather than naive max capture
+  const capVal = playedMoveObj.captured ? PIECE_VALUES[playedMoveObj.captured] : 0;
+  let isObviousFreeCapture = false;
+  if (isCapture && !givesCheck && capVal >= 100 && secondBestScore > -120 && playedScore < 25000) {
+    chess.move(playedMoveObj);
+    const { r, c } = algebraicToRC(to);
+    const seeLoss = computeSeeGainOnSquare(chess.board(), r, c, chess.turn());
+    chess.undo();
+    if (capVal - seeLoss >= 100) {
+      isObviousFreeCapture = true;
+    }
+  }
 
   if (
     cpLoss <= 15 &&

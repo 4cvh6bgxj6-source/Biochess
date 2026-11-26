@@ -1,7 +1,8 @@
 import { Chess } from 'chess.js';
 import type { Move, PieceSymbol } from 'chess.js';
 import type { GameState, PieceColor, SavedGameReview } from './types';
-import { searchPositionWithPv } from './fast-chess-engine';
+import { searchBestMoves, searchPositionWithPv } from './fast-chess-engine';
+import { detectGenuineSacrifice } from './chess-bot';
 
 export type CoachMoveClass =
   | 'book'
@@ -636,22 +637,6 @@ export async function analyzeFullGameWithEngine(
     const mateAfterForMover = afterEval?.mateIn ? afterEval.mateIn * moverSign : undefined;
 
     let classification: CoachMoveClass = 'good';
-    const isMaterialSacrifice = (() => {
-      try {
-        const c = new Chess(raw.fenBefore);
-        const legals = c.moves({ verbose: true });
-        const played = legals.find((m) => m.from === raw.from && m.to === raw.to);
-        if (!played || PIECE_VALUES[played.piece] < 300) return false;
-        c.move(played);
-        const oppMaxCap = c
-          .moves({ verbose: true })
-          .reduce((mx, om) => (om.captured ? Math.max(mx, PIECE_VALUES[om.captured]) : mx), 0);
-        const net = (played.captured ? PIECE_VALUES[played.captured] : 0) - oppMaxCap;
-        return net <= -180;
-      } catch {
-        return false;
-      }
-    })();
 
     if (isTerminalMate) {
       classification = 'great';
@@ -676,8 +661,37 @@ export async function analyzeFullGameWithEngine(
       classification = 'mistake';
     } else if (cpLoss >= 46) {
       classification = 'inaccuracy';
-    } else if (isMaterialSacrifice && cpLoss <= 30 && evalAfterMoverCp >= 90) {
-      classification = 'brilliant';
+    } else if (
+      cpLoss <= 25 &&
+      (evalAfterMoverCp >= 60 || (mateAfterForMover !== undefined && mateAfterForMover > 0)) &&
+      detectGenuineSacrifice(raw.fenBefore, raw.from, raw.to, raw.promotion)
+    ) {
+      // Verify soundness and non-crushing alternative gap at depth 5 (only runs on genuine sacrifice candidates)
+      const vRes = searchBestMoves(raw.fenBefore, {
+        maxDepth: 5,
+        budgetMs: 100,
+        quiescencePlies: 5,
+      });
+      let confirmedBrilliant = false;
+      if (vRes && vRes.ranked.length > 0) {
+        const vBest = vRes.ranked[0].scoreCp;
+        const vSecond = vRes.ranked[1]?.scoreCp ?? vBest;
+        const targetPromo = raw.promotion || 'q';
+        const vPlayedEntry = vRes.ranked.find(
+          (e) => e.from === raw.from && e.to === raw.to && (!e.promo || e.promo === targetPromo)
+        );
+        const vPlayed = vPlayedEntry ? vPlayedEntry.scoreCp : vBest - 120;
+        const vCpLoss = Math.max(0, Math.round(vBest - vPlayed));
+        if (
+          vCpLoss <= 15 &&
+          (vPlayed >= 80 || vPlayed >= 25000) &&
+          vSecond < 750 &&
+          vBest - vSecond >= 85
+        ) {
+          confirmedBrilliant = true;
+        }
+      }
+      classification = confirmedBrilliant ? 'brilliant' : 'good';
     } else if (playedWasBest && evalSwingCp <= 35 && Math.abs(evalBeforeMoverCp) >= 80 && cpLoss === 0 && i >= 8 && Math.abs(evalBeforeMoverCp) < 1500) {
       classification = raw.san.includes('+') ? 'great' : 'good';
     } else {

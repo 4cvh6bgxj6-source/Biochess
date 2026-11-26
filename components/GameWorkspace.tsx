@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -149,19 +149,28 @@ export function GameWorkspace({
 
   const material = useMemo(() => computeCaptured(game.moves), [game.moves]);
 
+  const moveListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (viewMoveIndex === null && moveListRef.current) {
+      moveListRef.current.scrollTop = moveListRef.current.scrollHeight;
+    }
+  }, [game.moves.length, viewMoveIndex]);
+
   const myQualityCounts = useMemo(() => {
-    const counts: Record<Exclude<MoveQuality, 'neutral'>, number> = {
+    const counts: Record<MoveQuality, number> = {
       book: 0,
       brilliant: 0,
       great: 0,
       good: 0,
+      neutral: 0,
       mistake: 0,
       blunder: 0,
     };
     if (!showMoveAnalysis) return counts;
     for (const m of game.moves) {
       if (m.color !== myColor) continue;
-      if (m.quality && m.quality !== 'neutral' && m.quality in counts) {
+      if (m.quality && m.quality in counts) {
         counts[m.quality] += 1;
       }
     }
@@ -261,17 +270,36 @@ export function GameWorkspace({
     handleSelectMoveIndex(target);
   }
 
-  const inspectedMeta =
+  let latestMyMoveEntry: { move: GameMove; idx: number } | null = null;
+  for (let i = game.moves.length - 1; i >= 0; i--) {
+    if (game.moves[i].color === myColor) {
+      latestMyMoveEntry = { move: game.moves[i], idx: i };
+      break;
+    }
+  }
+
+  const showingPlayerFocusAfterBot = Boolean(
     showMoveAnalysis &&
-    inspectedMove?.quality &&
-    inspectedMove.quality !== 'neutral' &&
-    inspectedMove.quality in QUALITY_META
-      ? QUALITY_META[inspectedMove.quality]
+      isActive &&
+      game.isBotGame &&
+      viewMoveIndex === null &&
+      inspectedMove &&
+      inspectedMove.color !== myColor &&
+      latestMyMoveEntry
+  );
+
+  const evalMove = showingPlayerFocusAfterBot ? latestMyMoveEntry!.move : inspectedMove;
+  const evalMoveIdx = showingPlayerFocusAfterBot ? latestMyMoveEntry!.idx : activeMoveIndex;
+  const botReplyMove = showingPlayerFocusAfterBot ? inspectedMove : null;
+
+  const evalMeta =
+    showMoveAnalysis && evalMove?.quality && evalMove.quality in QUALITY_META
+      ? QUALITY_META[evalMove.quality]
       : null;
 
   const bestMoveHint =
-    showMoveAnalysis && reviewData && activeMoveIndex >= 0
-      ? reviewData.bestMoveByPly[activeMoveIndex]
+    showMoveAnalysis && reviewData && evalMoveIdx >= 0
+      ? reviewData.bestMoveByPly[evalMoveIdx]
       : undefined;
 
   return (
@@ -408,6 +436,7 @@ export function GameWorkspace({
                   <span className="text-[#26D0C9]">!! {myQualityCounts.brilliant}</span>
                   <span className="text-[#7AB3E0]">! {myQualityCounts.great}</span>
                   <span className="text-[#9ED16A]">Buone {myQualityCounts.good}</span>
+                  <span className="text-[#E7C666]">?! {myQualityCounts.neutral}</span>
                   <span className="text-[#F5A84B]">? {myQualityCounts.mistake}</span>
                   <span className="text-[#F16562]">?? {myQualityCounts.blunder}</span>
                 </div>
@@ -466,19 +495,24 @@ export function GameWorkspace({
           )}
 
           {/* Move Evaluation Bar: Live during Bot matches, Post-Game only during Online PvP */}
-          {showMoveAnalysis && inspectedMove && (
+          {showMoveAnalysis && evalMove && (
             <div className="px-3.5 py-2 bg-[#21201D] border-b border-[#3C3A36] flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
-                {inspectedMove.quality && inspectedMove.quality !== 'neutral' && (
-                  <MoveQualityBadge quality={inspectedMove.quality} size="board" />
+                {evalMove.quality && (
+                  <MoveQualityBadge quality={evalMove.quality} size="board" />
                 )}
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-white truncate">
-                    <span className="font-mono-tabular mr-1.5">{inspectedMove.san}</span>
-                    {inspectedMeta ? (
-                      <span className={inspectedMeta.textClass}>{inspectedMeta.title}</span>
+                    {isActive && game.isBotGame && evalMove.color === myColor && (
+                      <span className="text-[10px] uppercase tracking-wide text-[#9E9D9A] mr-1.5">
+                        Tu:
+                      </span>
+                    )}
+                    <span className="font-mono-tabular mr-1.5">{evalMove.san}</span>
+                    {evalMeta ? (
+                      <span className={evalMeta.textClass}>{evalMeta.title}</span>
                     ) : (
-                      <span className="text-[#9E9D9A]">Imprecisione</span>
+                      <span className="text-[#9E9D9A]">Valutata</span>
                     )}
                   </p>
                   <p className="text-[11px] text-[#9E9D9A] truncate">
@@ -487,25 +521,31 @@ export function GameWorkspace({
                         {dict.reviewHintPrefix}{' '}
                         <span className="font-mono-tabular">{bestMoveHint}</span>
                       </span>
-                    ) : inspectedMeta ? (
-                      inspectedMeta.subtitle
+                    ) : evalMeta ? (
+                      evalMeta.subtitle
                     ) : (
-                      'Leggermente inferiore alla migliore'
+                      'Mossa analizzata'
                     )}
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {botReplyMove && (
+                  <span className="px-1.5 py-0.5 rounded bg-[#2B2926] border border-[#3C3A36] text-[10px] font-mono-tabular text-[#C3C2C0] inline-flex items-center gap-1">
+                    <span>Bot: {botReplyMove.san}</span>
+                    <MoveQualityBadge quality={botReplyMove.quality} size="sm" />
+                  </span>
+                )}
                 {isActive && game.isBotGame && reviewData && (
                   <span className="px-2 py-0.5 rounded bg-[#262421] border border-[#81B64C]/40 text-[10px] font-bold text-[#81B64C] font-mono-tabular">
                     {reviewData.accuracyPct}%
                   </span>
                 )}
-                {inspectedMove.quality !== 'book' &&
-                  typeof inspectedMove.cpLoss === 'number' &&
-                  inspectedMove.cpLoss > 0 && (
+                {evalMove.quality !== 'book' &&
+                  typeof evalMove.cpLoss === 'number' &&
+                  evalMove.cpLoss > 0 && (
                     <span className="text-[11px] font-mono-tabular text-[#9E9D9A]">
-                      -{(inspectedMove.cpLoss / 100).toFixed(1)}
+                      -{(evalMove.cpLoss / 100).toFixed(1)}
                     </span>
                   )}
               </div>
@@ -513,7 +553,7 @@ export function GameWorkspace({
           )}
 
           {/* Chess.com 2-Column Alternating Move List */}
-          <div className="h-[170px] overflow-y-auto font-mono-tabular text-xs">
+          <div ref={moveListRef} className="h-[170px] overflow-y-auto font-mono-tabular text-xs">
             {movePairs.length === 0 ? (
               <p className="text-[#8B8987] text-center py-10 font-sans">
                 {dict.makeFirstMove}

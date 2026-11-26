@@ -642,7 +642,7 @@ export function ChessBoard({
                   </span>
                 )}
 
-                {isLastMoveDest && lastMove?.quality && lastMove.quality !== 'neutral' && (
+                {isLastMoveDest && lastMove?.quality && (
                   <span className="absolute top-0.5 right-0.5 z-30 pointer-events-none">
                     <MoveQualityBadge quality={lastMove.quality} size="board" />
                   </span>
