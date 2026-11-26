@@ -142,7 +142,16 @@ export function ChessApp() {
   const prevChatCountRef = useRef<Record<string, number>>({});
   const prevIncomingChallengeIdsRef = useRef<Set<string>>(new Set());
   const lastLocallyPlayedMoveRef = useRef<{ gameId: string; ply: number } | null>(null);
+  const submittingMoveRef = useRef<boolean>(false);
   const activeLangRef = useRef<string>('it');
+  const [optimisticMoveState, setOptimisticMoveState] = useState<{
+    gameId: string;
+    baseMovesLen: number;
+    fen: string;
+    pgn: string;
+    turn: PieceColor;
+    move: GameMove;
+  } | null>(null);
 
   if (runtimeFatalError) {
     throw runtimeFatalError;
@@ -420,10 +429,28 @@ export function ChessApp() {
 
   const activeGame: GameState | null = useMemo(() => {
     if (!activeGameId || !activeGameDoc || activeGameDoc.id !== activeGameId) return null;
-    const moves = activeMovesState.gameId === activeGameId ? activeMovesState.moves : [];
+    const baseMoves = activeMovesState.gameId === activeGameId ? activeMovesState.moves : [];
     const messages = activeMessagesState.gameId === activeGameId ? activeMessagesState.messages : [];
-    return assembleGameState(activeGameDoc, moves, messages);
-  }, [activeGameId, activeGameDoc, activeMovesState, activeMessagesState]);
+    const assembled = assembleGameState(activeGameDoc, baseMoves, messages);
+
+    if (
+      optimisticMoveState &&
+      optimisticMoveState.gameId === activeGameId &&
+      assembled.status === 'active' &&
+      baseMoves.length <= optimisticMoveState.baseMovesLen
+    ) {
+      const applyFen = activeGameDoc.movesCount <= optimisticMoveState.baseMovesLen;
+      return {
+        ...assembled,
+        fen: applyFen ? optimisticMoveState.fen : assembled.fen,
+        pgn: applyFen ? optimisticMoveState.pgn : assembled.pgn,
+        turn: applyFen ? optimisticMoveState.turn : assembled.turn,
+        moves: [...baseMoves, optimisticMoveState.move],
+      };
+    }
+
+    return assembled;
+  }, [activeGameId, activeGameDoc, activeMovesState, activeMessagesState, optimisticMoveState]);
 
   // Audio FX for moves, game end, and opponent chat messages
   useEffect(() => {
@@ -431,12 +458,12 @@ export function ChessApp() {
     const gId = activeGame.id;
     const prevCount = prevMovesCountRef.current[gId] ?? activeGame.moves.length;
     const prevStatus = prevGameStatusRef.current[gId] ?? activeGame.status;
+    const alreadyPlayedLocally =
+      lastLocallyPlayedMoveRef.current?.gameId === gId &&
+      lastLocallyPlayedMoveRef.current?.ply === activeGame.moves.length;
 
     if (activeGame.moves.length > prevCount) {
       const lastMove = activeGame.moves[activeGame.moves.length - 1];
-      const alreadyPlayedLocally =
-        lastLocallyPlayedMoveRef.current?.gameId === gId &&
-        lastLocallyPlayedMoveRef.current?.ply === activeGame.moves.length;
 
       if (!alreadyPlayedLocally) {
         const isCapture = Boolean(lastMove?.captured);
@@ -458,7 +485,7 @@ export function ChessApp() {
           soundFX.playOpponentMove();
         }
       }
-    } else if (prevStatus === 'active' && activeGame.status !== 'active') {
+    } else if (prevStatus === 'active' && activeGame.status !== 'active' && !alreadyPlayedLocally) {
       soundFX.playGameOver(false);
     }
 
@@ -813,12 +840,21 @@ export function ChessApp() {
     promotion?: 'q' | 'r' | 'b' | 'n'
   ) {
     if (!authUser || !activeGame || activeGame.status !== 'active') return;
+    if (submittingMoveRef.current) return;
     soundFX.unlock();
 
-    // Play the crisp wooden piece sound immediately inside the user gesture (0ms latency)
+    const docMovesCount =
+      activeGameDoc && activeGameDoc.id === activeGame.id
+        ? activeGameDoc.movesCount
+        : activeGame.moves.length;
+    const baseMovesLen = Math.max(activeGame.moves.length, docMovesCount);
+    const snapshotGame = activeGame;
+
+    // Preview move locally for 0ms visual & audio responsiveness (even before Firestore commits)
     let playedLocally = false;
     try {
-      const previewChess = new Chess(activeGame.fen);
+      const previewChess = new Chess(snapshotGame.fen);
+      const movingColor = previewChess.turn();
       const previewRes = previewChess.move({
         from,
         to,
@@ -827,9 +863,26 @@ export function ChessApp() {
       if (previewRes) {
         playedLocally = true;
         lastLocallyPlayedMoveRef.current = {
-          gameId: activeGame.id,
-          ply: activeGame.moves.length + 1,
+          gameId: snapshotGame.id,
+          ply: baseMovesLen + 1,
         };
+        setOptimisticMoveState({
+          gameId: snapshotGame.id,
+          baseMovesLen,
+          fen: previewChess.fen(),
+          pgn: previewChess.pgn(),
+          turn: previewChess.turn(),
+          move: {
+            san: previewRes.san,
+            from: previewRes.from,
+            to: previewRes.to,
+            fen: previewChess.fen(),
+            color: movingColor,
+            captured: previewRes.captured,
+            promotion: previewRes.promotion,
+            timestamp: Date.now(),
+          },
+        });
         const isOver = previewChess.isGameOver();
         if (isOver) {
           soundFX.playGameOver(true);
@@ -849,28 +902,33 @@ export function ChessApp() {
       // let submitMoveToFirestore report invalid moves if any
     }
 
+    submittingMoveRef.current = true;
     try {
       const res = await submitMoveToFirestore({
-        game: activeGame,
+        game: snapshotGame,
         uid: authUser.uid,
         from,
         to,
         promotion,
         liveWhiteMs: whiteTimeMs,
         liveBlackMs: blackTimeMs,
+        expectedMovesCount: docMovesCount,
       });
       if (!res.ok) {
         if (playedLocally) {
           lastLocallyPlayedMoveRef.current = null;
+          setOptimisticMoveState((prev) =>
+            prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen ? null : prev
+          );
         }
         setGameError(res.error);
         setTimeout(() => setGameError(null), 3000);
         return;
       }
-      if (activeGame.isBotGame) {
+      if (snapshotGame.isBotGame) {
         humanMoveMetaRef.current = {
-          gameId: activeGame.id,
-          ply: activeGame.moves.length + 1,
+          gameId: snapshotGame.id,
+          ply: baseMovesLen + 1,
           quality: res.quality,
           captured: res.captured,
           inCheck: res.inCheck,
@@ -879,10 +937,15 @@ export function ChessApp() {
     } catch (err) {
       if (playedLocally) {
         lastLocallyPlayedMoveRef.current = null;
+        setOptimisticMoveState((prev) =>
+          prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen ? null : prev
+        );
       }
       console.error('Move submission warning:', err);
       setGameError('Impossibile completare la mossa: controlla connessione o orologio.');
       setTimeout(() => setGameError(null), 3500);
+    } finally {
+      submittingMoveRef.current = false;
     }
   }
 
@@ -909,19 +972,19 @@ export function ChessApp() {
     <div className="min-h-screen flex flex-col bg-[#302E2B] text-[#F3F3F2]">
       {/* Top Bar Contract: 3 zones separated by gap-8 */}
       <header className="sticky top-0 z-40 border-b border-[#3C3A36] bg-[#262421]">
-        <div className="max-w-[1160px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3 sm:gap-6 lg:gap-8">
+        <div className="max-w-[1160px] mx-auto px-2.5 sm:px-6 h-14 flex items-center justify-between gap-1.5 sm:gap-6 lg:gap-8">
           {/* Zone 1: BioChess Emblem + Wordmark */}
           <button
             type="button"
             onClick={() => navigateToLobbyTab()}
-            className="inline-flex items-center gap-2.5 text-lg font-extrabold tracking-tight text-white whitespace-nowrap shrink-0"
+            className="inline-flex items-center gap-1.5 sm:gap-2.5 text-sm sm:text-lg font-extrabold tracking-tight text-white whitespace-nowrap shrink-0"
           >
-            <span className="relative w-9 h-9 rounded overflow-hidden border border-[#3C3A36] bg-[#0F1419] shrink-0">
+            <span className="relative w-7 h-7 sm:w-9 sm:h-9 rounded overflow-hidden border border-[#3C3A36] bg-[#0F1419] shrink-0">
               <Image
                 src={BIOCHESS_LOGO}
                 alt="BioChess"
                 fill
-                sizes="36px"
+                sizes="(max-width: 640px) 28px, 36px"
                 className="object-cover"
                 referrerPolicy="no-referrer"
               />
@@ -991,7 +1054,7 @@ export function ChessApp() {
           )}
 
           {/* Zone 3: Style selector + Language selector + 1 primary user action */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 shrink-0">
             <BoardStylePicker label={dict.navStyle} lang={activeLang} />
             <LanguagePicker
               lang={activeLang}
@@ -1005,7 +1068,7 @@ export function ChessApp() {
                 <button
                   type="button"
                   onClick={() => setViewMode('game')}
-                  className="px-3.5 py-1.5 rounded bg-[#81B64C] hover:bg-[#95C85E] text-white text-xs font-bold border-b-2 border-[#5D8A32] whitespace-nowrap shrink-0"
+                  className="px-2 sm:px-3.5 py-1 sm:py-1.5 rounded bg-[#81B64C] hover:bg-[#95C85E] text-white text-[11px] sm:text-xs font-bold border-b-2 border-[#5D8A32] whitespace-nowrap shrink-0"
                 >
                   {dict.backToGame}
                 </button>
@@ -1013,15 +1076,17 @@ export function ChessApp() {
                 <button
                   type="button"
                   onClick={() => void handleLogout()}
-                  className="px-3 py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[#E5E4E2] text-xs font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+                  title={profile.username}
+                  aria-label={`${profile.username} - Esci`}
+                  className="px-2 sm:px-3 py-1 sm:py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[#E5E4E2] text-[11px] sm:text-xs font-bold inline-flex items-center gap-1 sm:gap-2 whitespace-nowrap shrink-0"
                 >
                   {countryCodeToFlag(profile.country) && (
-                    <span className="text-sm leading-none shrink-0" aria-hidden="true">
+                    <span className="hidden sm:inline text-sm leading-none shrink-0" aria-hidden="true">
                       {countryCodeToFlag(profile.country)}
                     </span>
                   )}
-                  <span className="max-w-[110px] truncate">{profile.username}</span>
-                  <LogOut className="w-3.5 h-3.5 text-[#9E9D9A]" />
+                  <span className="max-w-[54px] sm:max-w-[110px] truncate">{profile.username}</span>
+                  <LogOut className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#9E9D9A] shrink-0" />
                 </button>
               )
             ) : (

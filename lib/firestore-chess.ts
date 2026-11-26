@@ -1035,8 +1035,9 @@ export async function submitMoveToFirestore(params: {
   liveWhiteMs: number;
   liveBlackMs: number;
   botChatText?: string | null;
+  expectedMovesCount?: number;
 }): Promise<{ ok: true; nextStatus: GameStatus; movedColor: PieceColor; captured?: string; inCheck: boolean; quality: GameMove['quality'] } | { ok: false; error: string }> {
-  const { game, uid, from, to, promotion, liveWhiteMs, liveBlackMs, botChatText } = params;
+  const { game, uid, from, to, promotion, liveWhiteMs, liveBlackMs, botChatText, expectedMovesCount } = params;
   if (game.status !== 'active') {
     return { ok: false, error: 'Partita già conclusa.' };
   }
@@ -1055,23 +1056,29 @@ export async function submitMoveToFirestore(params: {
     return { ok: false, error: 'Mossa non valida.' };
   }
 
+  const baseMovesCount = Math.max(
+    game.moves.length,
+    typeof expectedMovesCount === 'number' && Number.isFinite(expectedMovesCount) ? expectedMovesCount : 0
+  );
+
   const evalResult = evaluatePlayedMove(
     game.fen,
     from,
     to,
     promotion,
-    prevMove ? { to: prevMove.to, captured: prevMove.captured } : undefined
+    prevMove ? { to: prevMove.to, captured: prevMove.captured } : undefined,
+    baseMovesCount
   );
 
   const tc = TIME_CONTROLS[game.timeControl];
-  const isClockedActiveTurn = game.timeControl !== 'unlimited' && game.moves.length >= 1;
+  const isClockedActiveTurn = game.timeControl !== 'unlimited' && baseMovesCount >= 1;
   const moverRemainingBeforeMove = movingColor === 'w' ? liveWhiteMs : liveBlackMs;
   if (isClockedActiveTurn && moverRemainingBeforeMove <= 0) {
     return { ok: false, error: 'Tempo scaduto.' };
   }
 
-  let nextWhiteMs = Math.max(0, Math.min(86400000, Math.round(liveWhiteMs)));
-  let nextBlackMs = Math.max(0, Math.min(86400000, Math.round(liveBlackMs)));
+  let nextWhiteMs = Math.max(0, Math.min(86400000, Math.round(Number.isFinite(liveWhiteMs) ? liveWhiteMs : 0)));
+  let nextBlackMs = Math.max(0, Math.min(86400000, Math.round(Number.isFinite(liveBlackMs) ? liveBlackMs : 0)));
   if (isClockedActiveTurn) {
     if (movingColor === 'w') {
       nextWhiteMs = Math.max(1, Math.min(86400000, nextWhiteMs + tc.incrementMs));
@@ -1109,8 +1116,11 @@ export async function submitMoveToFirestore(params: {
     nextEndReason = 'Patta (regola delle 50 mosse)';
   }
 
-  const nextPly = game.moves.length + 1;
+  const nextPly = baseMovesCount + 1;
   const moveDocId = String(nextPly);
+  const safeCpLoss = Number.isFinite(evalResult.cpLoss)
+    ? Math.max(0, Math.min(200000, Math.round(evalResult.cpLoss)))
+    : 0;
 
   try {
     const batch = writeBatch(db);
@@ -1124,7 +1134,7 @@ export async function submitMoveToFirestore(params: {
       captured: moveRes.captured ? String(moveRes.captured).slice(0, 2) : '',
       promotion: moveRes.promotion ? String(moveRes.promotion).slice(0, 2) : '',
       quality: evalResult.quality,
-      cpLoss: Math.max(0, Math.min(200000, Math.round(evalResult.cpLoss))),
+      cpLoss: safeCpLoss,
       authorUid: uid,
       createdAt: serverTimestamp(),
     });

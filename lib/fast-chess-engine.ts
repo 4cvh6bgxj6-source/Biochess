@@ -1111,6 +1111,9 @@ export interface SearchConfig {
   budgetMs: number;
   quiescencePlies: number;
   style?: 'normal' | 'aggressive';
+  excludeMove?: { from: string; to: string; promo?: string };
+  deterministic?: boolean;
+  maxNodes?: number;
 }
 
 export interface RootSearchResult {
@@ -1130,17 +1133,26 @@ export interface RootSearchResult {
 export function searchBestMoves(fen: string, config: SearchConfig): RootSearchResult | null {
   const fb = new FastBoard(fen);
   const style = config.style ?? 'normal';
+  const deterministic = Boolean(config.deterministic);
+  const maxNodes = config.maxNodes ?? 200000;
   const deadline = Date.now() + config.budgetMs;
   let nodes = 0;
   let timedOut = false;
 
+  if (deterministic) {
+    ttFlag.fill(TT_NONE);
+  }
   killerMoves.fill(0);
-  // Decay history slightly rather than zeroing completely, or clear cleanly for determinism
+  // Clear history table cleanly for deterministic move ordering
   historyTable.fill(0);
 
   const checkTime = () => {
     nodes++;
-    if ((nodes & 1023) === 0 && Date.now() >= deadline) {
+    if (deterministic) {
+      if (nodes >= maxNodes) {
+        timedOut = true;
+      }
+    } else if ((nodes & 1023) === 0 && Date.now() >= deadline) {
       timedOut = true;
     }
   };
@@ -1345,8 +1357,17 @@ export function searchBestMoves(fen: string, config: SearchConfig): RootSearchRe
   // Generate strictly legal root moves first
   const pseudoRoot = fb.generatePseudoMoves(false);
   const legalRoot: number[] = [];
+  const ex = config.excludeMove;
+  const exFrom = ex ? algebraicTo0x88(ex.from) : -1;
+  const exTo = ex ? algebraicTo0x88(ex.to) : -1;
   for (let i = 0; i < pseudoRoot.length; i++) {
     const m = pseudoRoot[i];
+    if (ex && moveFrom(m) === exFrom && moveTo(m) === exTo) {
+      const p = fastMovePromoChar(m);
+      if (!ex.promo || !p || p === ex.promo) {
+        continue;
+      }
+    }
     if (fb.makeMove(m)) {
       legalRoot.push(m);
       fb.unmakeMove(m);
@@ -1398,7 +1419,7 @@ export function searchBestMoves(fen: string, config: SearchConfig): RootSearchRe
     if (rootScores[0].score >= MATE_SCORE - 50) {
       break;
     }
-    if (Date.now() >= deadline) {
+    if (deterministic ? nodes >= maxNodes : Date.now() >= deadline) {
       break;
     }
   }
@@ -1443,6 +1464,9 @@ export function searchPositionWithPv(
     budgetMs: config.budgetMs ?? 55,
     quiescencePlies: config.quiescencePlies ?? 4,
     style: config.style ?? 'normal',
+    excludeMove: config.excludeMove,
+    deterministic: config.deterministic,
+    maxNodes: config.maxNodes,
   };
 
   const rootRes = searchBestMoves(fen, fullConfig);
@@ -1464,7 +1488,7 @@ export function searchPositionWithPv(
     { from: rootRes.bestFrom, to: rootRes.bestTo, promo: rootRes.bestPromo },
   ];
 
-  // Follow principal variation deterministically using TT + fast follow-up search
+  // Follow principal variation deterministically using fast follow-up search
   let curFrom = rootRes.bestFrom;
   let curTo = rootRes.bestTo;
   let curPromo = rootRes.bestPromo;
@@ -1483,9 +1507,11 @@ export function searchPositionWithPv(
     const nextFen = fb.toFen();
     const follow = searchBestMoves(nextFen, {
       maxDepth: 2,
-      budgetMs: 14,
+      budgetMs: 25,
       quiescencePlies: 2,
       style: fullConfig.style,
+      deterministic: fullConfig.deterministic,
+      maxNodes: fullConfig.maxNodes,
     });
     if (!follow) break;
 

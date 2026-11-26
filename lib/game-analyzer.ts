@@ -1,8 +1,8 @@
 import { Chess } from 'chess.js';
 import type { Move, PieceSymbol } from 'chess.js';
 import type { GameState, PieceColor, SavedGameReview } from './types';
-import { searchBestMoves, searchPositionWithPv } from './fast-chess-engine';
-import { detectGenuineSacrifice } from './chess-bot';
+import { searchPositionWithPv, type EnginePvResult } from './fast-chess-engine';
+import { classifyMoveUnified, UNIFIED_EVAL_CONFIG } from './chess-bot';
 
 export type CoachMoveClass =
   | 'book'
@@ -559,7 +559,7 @@ export async function analyzeFullGameWithEngine(
 
   const getEval = (fen: string) => {
     if (evalCache.has(fen)) return evalCache.get(fen)!;
-    const res = searchPositionWithPv(fen, { maxDepth: 3, budgetMs: 14, quiescencePlies: 3 }, 1);
+    const res = searchPositionWithPv(fen, UNIFIED_EVAL_CONFIG, 1);
     evalCache.set(fen, res);
     return res;
   };
@@ -571,6 +571,14 @@ export async function analyzeFullGameWithEngine(
   for (let i = 0; i < total; i++) {
     const raw = parsed.rawMoves[i];
     const beforeEval = getEval(raw.fenBefore);
+    let legalMovesCount: number | undefined;
+    try {
+      const beforeChess = new Chess(raw.fenBefore);
+      legalMovesCount = beforeChess.moves().length;
+    } catch {
+      legalMovesCount = undefined;
+    }
+
     let isTerminalMate = false;
     let isTerminalDraw = false;
     try {
@@ -582,14 +590,22 @@ export async function analyzeFullGameWithEngine(
       isTerminalDraw = false;
     }
 
-    const afterEval = isTerminalMate
+    const targetPromo = raw.promotion || 'q';
+    const playedWasBest = Boolean(
+      beforeEval &&
+        beforeEval.bestFrom === raw.from &&
+        beforeEval.bestTo === raw.to &&
+        (!beforeEval.bestPromo || beforeEval.bestPromo === targetPromo)
+    );
+
+    const afterEval: EnginePvResult | null = isTerminalMate
       ? {
           scoreCpWhite: raw.color === 'w' ? 30000 : -30000,
           mateIn: 0,
           bestFrom: raw.from,
           bestTo: raw.to,
           pv: [],
-          reachedDepth: 3,
+          reachedDepth: UNIFIED_EVAL_CONFIG.maxDepth,
         }
       : isTerminalDraw
         ? {
@@ -597,106 +613,48 @@ export async function analyzeFullGameWithEngine(
             bestFrom: raw.from,
             bestTo: raw.to,
             pv: [],
-            reachedDepth: 3,
+            reachedDepth: UNIFIED_EVAL_CONFIG.maxDepth,
           }
-        : getEval(raw.fenAfter);
+        : playedWasBest
+          ? beforeEval
+          : getEval(raw.fenAfter);
+
+    const prevRaw = i > 0 ? parsed.rawMoves[i - 1] : undefined;
+    const unified = classifyMoveUnified({
+      fenBefore: raw.fenBefore,
+      fenAfter: raw.fenAfter,
+      from: raw.from,
+      to: raw.to,
+      promotion: raw.promotion,
+      captured: raw.captured,
+      san: raw.san,
+      color: raw.color,
+      plyIndex: i,
+      legalMovesCount,
+      lastMove: prevRaw ? { to: prevRaw.to, captured: prevRaw.captured } : undefined,
+      beforeEval,
+      afterEval,
+      isTerminalMate,
+      isTerminalDraw,
+    });
 
     const moverSign = raw.color === 'w' ? 1 : -1;
-    const evalBeforeWhiteCp = beforeEval?.scoreCpWhite ?? 0;
-    const evalAfterWhiteCp = isTerminalMate
-      ? raw.color === 'w'
-        ? 30000
-        : -30000
-      : isTerminalDraw
-        ? 0
-        : (afterEval?.scoreCpWhite ?? evalBeforeWhiteCp);
-
+    const evalBeforeWhiteCp = unified.evalBeforeWhiteCp;
+    const evalAfterWhiteCp = unified.evalAfterWhiteCp;
     const evalBeforeMoverCp = evalBeforeWhiteCp * moverSign;
     const evalAfterMoverCp = evalAfterWhiteCp * moverSign;
 
-    const bestFrom = beforeEval?.bestFrom || raw.from;
-    const bestTo = beforeEval?.bestTo || raw.to;
-    const bestPromo = beforeEval?.bestPromo;
+    const bestFrom = unified.bestFrom;
+    const bestTo = unified.bestTo;
+    const bestPromo = unified.bestPromo;
     const bestMoveSan = moveToSan(raw.fenBefore, bestFrom, bestTo, bestPromo);
     const bestPvSan = [bestMoveSan];
     const playedPvSan: string[] = [];
 
-    const playedWasBest =
-      bestFrom === raw.from &&
-      bestTo === raw.to &&
-      (!bestPromo || !raw.promotion || bestPromo === raw.promotion);
-
-    const cpLoss = isTerminalMate || playedWasBest
-      ? 0
-      : Math.max(0, Math.round(evalBeforeMoverCp - evalAfterMoverCp));
-
-    const evalSwingCp = Math.abs(evalAfterWhiteCp - evalBeforeWhiteCp);
+    const cpLoss = unified.cpLoss;
+    const evalSwingCp = unified.evalSwingCp;
     const phase = getGamePhase(raw.fenBefore, i);
-
-    const mateBeforeForMover = beforeEval?.mateIn ? beforeEval.mateIn * moverSign : undefined;
-    const mateAfterForMover = afterEval?.mateIn ? afterEval.mateIn * moverSign : undefined;
-
-    let classification: CoachMoveClass = 'good';
-
-    if (isTerminalMate) {
-      classification = 'great';
-    } else if (
-      (mateAfterForMover !== undefined && mateAfterForMover < 0) ||
-      cpLoss >= 250 ||
-      (evalBeforeMoverCp >= 300 && evalAfterMoverCp < 50 && cpLoss >= 220)
-    ) {
-      if (evalBeforeMoverCp >= 320 && evalAfterMoverCp >= 40 && mateAfterForMover === undefined) {
-        classification = 'missed_win';
-      } else {
-        classification = 'blunder';
-      }
-    } else if (
-      (mateBeforeForMover !== undefined && mateBeforeForMover > 0 && !mateAfterForMover) ||
-      (evalBeforeMoverCp >= 280 && evalAfterMoverCp <= 90 && cpLoss >= 170)
-    ) {
-      classification = 'missed_win';
-    } else if (i < 10 && cpLoss <= 55 && Math.abs(evalBeforeWhiteCp) < 160) {
-      classification = 'book';
-    } else if (cpLoss >= 100) {
-      classification = 'mistake';
-    } else if (cpLoss >= 46) {
-      classification = 'inaccuracy';
-    } else if (
-      cpLoss <= 25 &&
-      (evalAfterMoverCp >= 60 || (mateAfterForMover !== undefined && mateAfterForMover > 0)) &&
-      detectGenuineSacrifice(raw.fenBefore, raw.from, raw.to, raw.promotion)
-    ) {
-      // Verify soundness and non-crushing alternative gap at depth 5 (only runs on genuine sacrifice candidates)
-      const vRes = searchBestMoves(raw.fenBefore, {
-        maxDepth: 5,
-        budgetMs: 100,
-        quiescencePlies: 5,
-      });
-      let confirmedBrilliant = false;
-      if (vRes && vRes.ranked.length > 0) {
-        const vBest = vRes.ranked[0].scoreCp;
-        const vSecond = vRes.ranked[1]?.scoreCp ?? vBest;
-        const targetPromo = raw.promotion || 'q';
-        const vPlayedEntry = vRes.ranked.find(
-          (e) => e.from === raw.from && e.to === raw.to && (!e.promo || e.promo === targetPromo)
-        );
-        const vPlayed = vPlayedEntry ? vPlayedEntry.scoreCp : vBest - 120;
-        const vCpLoss = Math.max(0, Math.round(vBest - vPlayed));
-        if (
-          vCpLoss <= 15 &&
-          (vPlayed >= 80 || vPlayed >= 25000) &&
-          vSecond < 750 &&
-          vBest - vSecond >= 85
-        ) {
-          confirmedBrilliant = true;
-        }
-      }
-      classification = confirmedBrilliant ? 'brilliant' : 'good';
-    } else if (playedWasBest && evalSwingCp <= 35 && Math.abs(evalBeforeMoverCp) >= 80 && cpLoss === 0 && i >= 8 && Math.abs(evalBeforeMoverCp) < 1500) {
-      classification = raw.san.includes('+') ? 'great' : 'good';
-    } else {
-      classification = 'good';
-    }
+    const classification: CoachMoveClass = unified.classification;
 
     const tacticalNote = buildTacticalNote({
       color: raw.color,
@@ -706,8 +664,8 @@ export async function analyzeFullGameWithEngine(
       cpLoss,
       evalBeforeMoverCp,
       evalAfterMoverCp,
-      mateBefore: beforeEval?.mateIn,
-      mateAfter: afterEval?.mateIn,
+      mateBefore: unified.mateBefore,
+      mateAfter: unified.mateAfter,
       bestPvSan,
       playedPvSan,
     });
@@ -725,8 +683,8 @@ export async function analyzeFullGameWithEngine(
       fenAfter: raw.fenAfter,
       evalBeforeWhiteCp,
       evalAfterWhiteCp,
-      mateBefore: beforeEval?.mateIn,
-      mateAfter: afterEval?.mateIn,
+      mateBefore: unified.mateBefore,
+      mateAfter: unified.mateAfter,
       bestMoveSan,
       bestMoveFrom: bestFrom,
       bestMoveTo: bestTo,
@@ -786,7 +744,7 @@ export async function analyzeFullGameWithEngine(
     // Enrich ONLY the decisive moments with 4-ply Principal Variations for instant coaching accuracy
     const deepBefore = searchPositionWithPv(
       m.fenBefore,
-      { maxDepth: 4, budgetMs: 26, quiescencePlies: 4 },
+      { maxDepth: 4, budgetMs: 350, quiescencePlies: 4, deterministic: true, maxNodes: 180000 },
       4
     );
     if (deepBefore && deepBefore.pv.length > 0) {
@@ -798,7 +756,7 @@ export async function analyzeFullGameWithEngine(
       if (!afterCh.isGameOver()) {
         const deepAfter = searchPositionWithPv(
           m.fenAfter,
-          { maxDepth: 3, budgetMs: 18, quiescencePlies: 3 },
+          { maxDepth: 3, budgetMs: 250, quiescencePlies: 3, deterministic: true, maxNodes: 140000 },
           3
         );
         if (deepAfter && deepAfter.pv.length > 0) {
@@ -855,7 +813,7 @@ export function getMoveVariationOnDemand(move: AnalyzedMove): string[] {
   if (move.bestPvSan.length > 1) return move.bestPvSan;
   const deep = searchPositionWithPv(
     move.fenBefore,
-    { maxDepth: 3, budgetMs: 24, quiescencePlies: 3 },
+    { maxDepth: 3, budgetMs: 250, quiescencePlies: 3, deterministic: true, maxNodes: 140000 },
     4
   );
   if (deep && deep.pv.length > 0) {
@@ -924,7 +882,11 @@ export function evaluateStudentMoveOnPosition(
   const isDraw = chess.isDraw();
   const afterRes = isMate || isDraw
     ? null
-    : searchPositionWithPv(afterFen, { maxDepth: 4, budgetMs: 55, quiescencePlies: 4 }, 4);
+    : searchPositionWithPv(
+        afterFen,
+        { maxDepth: 4, budgetMs: 350, quiescencePlies: 4, deterministic: true, maxNodes: 180000 },
+        4
+      );
 
   const studentEvalWhiteCp = isMate
     ? moverColor === 'w'

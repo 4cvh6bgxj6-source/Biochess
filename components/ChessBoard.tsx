@@ -88,23 +88,27 @@ function buildInitialPieces(): Map<string, TrackedPiece> {
   return map;
 }
 
+function boardFallbackPieces(chess: Chess): TrackedPiece[] {
+  const list: TrackedPiece[] = [];
+  const board = chess.board();
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const sq = board[r][c];
+      if (!sq) continue;
+      const square = `${FILES[c]}${8 - r}`;
+      list.push({ id: `${sq.color}_${sq.type}_${square}`, type: sq.type, color: sq.color, square });
+    }
+  }
+  return list;
+}
+
 function trackPiecesFromMoves(
   chess: Chess,
   moves?: GameMove[],
   activeMoveCount?: number
 ): TrackedPiece[] {
   if (!moves) {
-    const list: TrackedPiece[] = [];
-    const board = chess.board();
-    for (let r = 0; r < 8; r++) {
-      for (let c = 0; c < 8; c++) {
-        const sq = board[r][c];
-        if (!sq) continue;
-        const square = `${FILES[c]}${8 - r}`;
-        list.push({ id: `${sq.color}_${sq.type}_${square}`, type: sq.type, color: sq.color, square });
-      }
-    }
-    return list;
+    return boardFallbackPieces(chess);
   }
 
   const limit = typeof activeMoveCount === 'number' ? activeMoveCount : moves.length;
@@ -155,6 +159,28 @@ function trackPiecesFromMoves(
         }
       }
     }
+  }
+
+  // Verify tracked map matches authoritative FEN board (guards against optimistic/Firestore moves subcollection lag)
+  const board = chess.board();
+  let pieceCount = 0;
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const sqPiece = board[r][c];
+      const sqName = `${FILES[c]}${8 - r}`;
+      const tracked = map.get(sqName);
+      if (sqPiece) {
+        pieceCount++;
+        if (!tracked || tracked.color !== sqPiece.color || tracked.type !== sqPiece.type) {
+          return boardFallbackPieces(chess);
+        }
+      } else if (tracked) {
+        return boardFallbackPieces(chess);
+      }
+    }
+  }
+  if (pieceCount !== map.size) {
+    return boardFallbackPieces(chess);
   }
 
   return Array.from(map.values());
@@ -314,8 +340,22 @@ export function ChessBoard({
   const boardTheme = boardThemeOverride ? getBoardTheme(boardThemeOverride) : ctxBoardTheme;
   const boardRef = useRef<HTMLDivElement>(null);
   const justDrewRef = useRef(false);
+  const justHandledPointerUpRef = useRef(false);
+  const pendingTapMoveRef = useRef<{ from: string; to: string; pointerId: number } | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [dragFrom, setDragFrom] = useState<string | null>(null);
+  const [pointerDrag, setPointerDrag] = useState<{
+    from: string;
+    pieceType: 'p' | 'n' | 'b' | 'r' | 'q' | 'k';
+    pieceColor: PieceColor;
+    startX: number;
+    startY: number;
+    offsetX: number;
+    offsetY: number;
+    hoverSquare: string | null;
+    active: boolean;
+    pointerId: number;
+  } | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<{
     from: string;
     to: string;
@@ -426,16 +466,22 @@ export function ChessBoard({
       setPendingPromotion({ from, to, color: playerColor || chess.turn() });
       setSelectedSquare(null);
       setDragFrom(null);
+      setPointerDrag(null);
       return;
     }
 
     clearAnnotations();
     setSelectedSquare(null);
     setDragFrom(null);
+    setPointerDrag(null);
     onMove(from, to);
   }
 
   function handleSquareClick(square: string, pieceColor?: PieceColor) {
+    if (justHandledPointerUpRef.current) {
+      justHandledPointerUpRef.current = false;
+      return;
+    }
     if (justDrewRef.current) {
       justDrewRef.current = false;
       return;
@@ -466,16 +512,28 @@ export function ChessBoard({
     }
   }
 
-  function isMovablePieceAt(square: string): boolean {
-    if (!canInteract || arrowMode) return false;
+  function getMovablePieceAt(square: string): { type: 'p' | 'n' | 'b' | 'r' | 'q' | 'k'; color: PieceColor } | null {
+    if (!canInteract || arrowMode) return null;
     const col = FILES.indexOf(square[0]);
     const row = 8 - parseInt(square[1], 10);
     const p = board[row]?.[col];
-    return Boolean(p && (!playerColor || p.color === playerColor) && p.color === chess.turn());
+    if (p && (!playerColor || p.color === playerColor) && p.color === chess.turn()) {
+      return { type: p.type, color: p.color };
+    }
+    return null;
+  }
+
+  function markPointerUpHandled() {
+    justHandledPointerUpRef.current = true;
+    setTimeout(() => {
+      justHandledPointerUpRef.current = false;
+    }, 120);
   }
 
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
     justDrewRef.current = false;
+    justHandledPointerUpRef.current = false;
+    pendingTapMoveRef.current = null;
     soundFX.unlock();
     const sq = getSquareFromClientPos(e.clientX, e.clientY);
     if (!sq) return;
@@ -488,20 +546,65 @@ export function ChessBoard({
       return;
     }
 
-    // Left-click draws arrows/highlights if Arrow Mode is ON,
-    // OR if dragging from a square that does NOT have a movable piece (and isn't completing a selected move)
-    if (e.button === 0) {
+    if (e.button === 0 || e.pointerType !== 'mouse') {
       if (arrowMode) {
         e.preventDefault();
         setDrawingState({ from: sq, to: sq, color: pickArrowColor(e), button: 0 });
         e.currentTarget.setPointerCapture(e.pointerId);
-      } else if (!isMovablePieceAt(sq) && !(selectedSquare && legalTargets.has(sq))) {
+        return;
+      }
+
+      if (canInteract && selectedSquare && legalTargets.has(sq)) {
+        pendingTapMoveRef.current = { from: selectedSquare, to: sq, pointerId: e.pointerId };
+        return;
+      }
+
+      const movable = getMovablePieceAt(sq);
+      if (movable && boardRef.current) {
+        const rect = boardRef.current.getBoundingClientRect();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setPointerDrag({
+          from: sq,
+          pieceType: movable.type,
+          pieceColor: movable.color,
+          startX: e.clientX,
+          startY: e.clientY,
+          offsetX: e.clientX - rect.left,
+          offsetY: e.clientY - rect.top,
+          hoverSquare: sq,
+          active: false,
+          pointerId: e.pointerId,
+        });
+        return;
+      }
+
+      if (e.pointerType === 'mouse') {
         setDrawingState({ from: sq, to: sq, color: pickArrowColor(e), button: 0 });
       }
     }
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (pointerDrag && e.pointerId === pointerDrag.pointerId) {
+      const rect = boardRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const dist = Math.hypot(e.clientX - pointerDrag.startX, e.clientY - pointerDrag.startY);
+      const active = pointerDrag.active || dist > 6;
+      if (active && !pointerDrag.active) {
+        setSelectedSquare(pointerDrag.from);
+        setDragFrom(pointerDrag.from);
+      }
+      const hoverSquare = getSquareFromClientPos(e.clientX, e.clientY);
+      setPointerDrag({
+        ...pointerDrag,
+        offsetX: e.clientX - rect.left,
+        offsetY: e.clientY - rect.top,
+        hoverSquare,
+        active,
+      });
+      return;
+    }
+
     if (!drawingState) return;
     const sq = getSquareFromClientPos(e.clientX, e.clientY);
     if (sq && sq !== drawingState.to) {
@@ -510,6 +613,49 @@ export function ChessBoard({
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    if (pointerDrag && e.pointerId === pointerDrag.pointerId) {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+      markPointerUpHandled();
+      const dropSq = getSquareFromClientPos(e.clientX, e.clientY);
+
+      if (pointerDrag.active) {
+        if (dropSq && dropSq !== pointerDrag.from) {
+          const legal = chess.moves({ square: pointerDrag.from as Square, verbose: true });
+          if (legal.some((m) => m.to === dropSq)) {
+            attemptMove(pointerDrag.from, dropSq);
+            return;
+          }
+        }
+        setDragFrom(null);
+        setPointerDrag(null);
+        return;
+      }
+
+      // Crisp tap (< 6px drag)
+      const tappedSq = pointerDrag.from;
+      setDragFrom(null);
+      setPointerDrag(null);
+      if (selectedSquare === tappedSq) {
+        setSelectedSquare(null);
+      } else {
+        setSelectedSquare(tappedSq);
+      }
+      return;
+    }
+
+    if (pendingTapMoveRef.current && e.pointerId === pendingTapMoveRef.current.pointerId) {
+      const pending = pendingTapMoveRef.current;
+      pendingTapMoveRef.current = null;
+      const upSq = getSquareFromClientPos(e.clientX, e.clientY);
+      if (upSq === pending.to) {
+        markPointerUpHandled();
+        attemptMove(pending.from, pending.to);
+        return;
+      }
+    }
+
     if (!drawingState) return;
     const endSq = getSquareFromClientPos(e.clientX, e.clientY) || drawingState.to;
 
@@ -541,7 +687,15 @@ export function ChessBoard({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      onPointerCancel={() => setDrawingState(null)}
+      onPointerCancel={(e) => {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+        pendingTapMoveRef.current = null;
+        setDrawingState(null);
+        setPointerDrag(null);
+        setDragFrom(null);
+      }}
       className="relative w-full max-w-[600px] aspect-square select-none rounded overflow-hidden shadow-xl touch-none"
     >
       {/* 8x8 Background Squares + Interactive Targets */}
@@ -562,6 +716,9 @@ export function ChessBoard({
               piece && piece.type === 'k' && piece.color === inCheckColor;
             const isLegalTarget = legalTargets.has(square);
             const isCaptureTarget = legalTargets.get(square) === true;
+            const isDragHoverTarget = Boolean(
+              pointerDrag?.active && pointerDrag.hoverSquare === square && isLegalTarget
+            );
             const userHighlight = highlights.find((h) => h.square === square);
 
             const showRankLabel = fIdx === 0;
@@ -591,24 +748,14 @@ export function ChessBoard({
                 type="button"
                 aria-label={`Casella ${square}${piece ? ` (${piece.type})` : ''}`}
                 onClick={() => handleSquareClick(square, piece?.color)}
-                onDragOver={(e) => {
-                  if (canInteract && !arrowMode && dragFrom) {
-                    e.preventDefault();
-                  }
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (dragFrom && dragFrom !== square) {
-                    attemptMove(dragFrom, square);
-                  }
-                  setDragFrom(null);
-                }}
                 style={{
                   backgroundColor: squareColor,
                   backgroundImage: squareTexture,
                   backgroundSize: boardTheme.id === 'sand' ? '12px 12px' : undefined,
                 }}
-                className="relative flex items-center justify-center w-full h-full p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#81B64C]"
+                className={`relative flex items-center justify-center w-full h-full p-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#81B64C] ${
+                  isDragHoverTarget ? 'ring-2 sm:ring-3 ring-inset ring-white/75' : ''
+                }`}
               >
                 {userHighlight && (
                   <span
@@ -676,6 +823,7 @@ export function ChessBoard({
             !arrowMode &&
             (!playerColor || p.color === playerColor) &&
             p.color === chess.turn();
+          const isBeingDragged = Boolean(pointerDrag?.active && pointerDrag.from === p.square);
 
           return (
             <motion.div
@@ -689,34 +837,12 @@ export function ChessBoard({
                 duration: 0.16,
                 ease: [0.22, 1, 0.36, 1],
               }}
-              className="absolute top-0 left-0 w-[12.5%] h-[12.5%] p-[1%]"
+              className={`absolute top-0 left-0 w-[12.5%] h-[12.5%] p-[1%] ${
+                isBeingDragged ? 'opacity-0' : ''
+              }`}
             >
               <div
-                draggable={canDragPiece}
                 onClick={() => handleSquareClick(p.square, p.color)}
-                onDragOver={(e) => {
-                  if (canInteract && !arrowMode && dragFrom) {
-                    e.preventDefault();
-                  }
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  if (dragFrom && dragFrom !== p.square) {
-                    attemptMove(dragFrom, p.square);
-                  }
-                  setDragFrom(null);
-                }}
-                onDragStart={(e) => {
-                  if (!canDragPiece) {
-                    e.preventDefault();
-                    return;
-                  }
-                  setDragFrom(p.square);
-                  setSelectedSquare(p.square);
-                  e.dataTransfer.effectAllowed = 'move';
-                  e.dataTransfer.setData('text/plain', p.square);
-                }}
-                onDragEnd={() => setDragFrom(null)}
                 className={`w-full h-full flex items-center justify-center ${
                   arrowMode ? 'pointer-events-none cursor-crosshair' : 'pointer-events-auto'
                 } ${
@@ -733,6 +859,25 @@ export function ChessBoard({
           );
         })}
       </div>
+
+      {/* Unified Floating Dragged Piece (Desktop Mouse + Mobile Touch) */}
+      {pointerDrag?.active && (
+        <div
+          style={{
+            left: `${pointerDrag.offsetX}px`,
+            top: `${pointerDrag.offsetY}px`,
+            transform: 'translate(-50%, -58%) scale(1.12)',
+          }}
+          className="absolute w-[12.5%] h-[12.5%] pointer-events-none z-30 drop-shadow-xl"
+          aria-hidden="true"
+        >
+          <ChessPiece
+            type={pointerDrag.pieceType}
+            color={pointerDrag.pieceColor}
+            pieceSet={pieceSetOverride}
+          />
+        </div>
+      )}
 
       {/* Chess.com-style Tactical Arrows Layer */}
       {(arrows.length > 0 || (drawingState && drawingState.from !== drawingState.to)) && (

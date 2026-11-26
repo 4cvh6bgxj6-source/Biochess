@@ -1,7 +1,13 @@
 import { Chess } from 'chess.js';
 import type { Move, PieceSymbol } from 'chess.js';
 import type { BotId, GameMove, MoveQuality, PieceColor } from './types';
-import { pickBookMoveSan, searchBestMoves, type SearchConfig } from './fast-chess-engine';
+import {
+  pickBookMoveSan,
+  searchBestMoves,
+  searchPositionWithPv,
+  type EnginePvResult,
+  type SearchConfig,
+} from './fast-chess-engine';
 import {
   getLocalizedBotChatReply,
   getLocalizedBotGreeting,
@@ -384,20 +390,292 @@ export function detectGenuineSacrifice(
   }
 }
 
+export const UNIFIED_EVAL_CONFIG: SearchConfig = {
+  maxDepth: 3,
+  budgetMs: 350,
+  quiescencePlies: 4,
+  deterministic: true,
+  maxNodes: 150000,
+};
+
+export type UnifiedMoveClass =
+  | 'book'
+  | 'brilliant'
+  | 'great'
+  | 'good'
+  | 'inaccuracy'
+  | 'mistake'
+  | 'blunder'
+  | 'missed_win';
+
+export interface UnifiedClassifyInput {
+  fenBefore: string;
+  fenAfter: string;
+  from: string;
+  to: string;
+  promotion?: 'q' | 'r' | 'b' | 'n';
+  captured?: string;
+  san: string;
+  color: PieceColor;
+  plyIndex: number;
+  legalMovesCount?: number;
+  lastMove?: { to: string; captured?: string };
+  beforeEval: EnginePvResult | null;
+  afterEval: EnginePvResult | null;
+  isTerminalMate: boolean;
+  isTerminalDraw: boolean;
+  getSecondBestEval?: () => EnginePvResult | null;
+}
+
+export interface UnifiedClassifyOutput {
+  classification: UnifiedMoveClass;
+  cpLoss: number;
+  evalBeforeWhiteCp: number;
+  evalAfterWhiteCp: number;
+  evalSwingCp: number;
+  bestFrom: string;
+  bestTo: string;
+  bestPromo?: 'n' | 'b' | 'r' | 'q';
+  mateBefore?: number;
+  mateAfter?: number;
+}
+
+export function classifyMoveUnified(input: UnifiedClassifyInput): UnifiedClassifyOutput {
+  const {
+    fenBefore,
+    fenAfter,
+    from,
+    to,
+    promotion,
+    captured,
+    san,
+    color,
+    plyIndex,
+    legalMovesCount,
+    lastMove,
+    beforeEval,
+    afterEval,
+    isTerminalMate,
+    isTerminalDraw,
+    getSecondBestEval,
+  } = input;
+
+  const moverSign = color === 'w' ? 1 : -1;
+  const evalBeforeWhiteCp = beforeEval?.scoreCpWhite ?? 0;
+  const evalAfterWhiteCp = isTerminalMate
+    ? color === 'w'
+      ? 30000
+      : -30000
+    : isTerminalDraw
+      ? 0
+      : (afterEval?.scoreCpWhite ?? evalBeforeWhiteCp);
+
+  const evalBeforeMoverCp = evalBeforeWhiteCp * moverSign;
+  const evalAfterMoverCp = evalAfterWhiteCp * moverSign;
+
+  const bestFrom = beforeEval?.bestFrom || from;
+  const bestTo = beforeEval?.bestTo || to;
+  const bestPromo = beforeEval?.bestPromo;
+
+  const targetPromo = promotion || 'q';
+  const playedWasBest =
+    bestFrom === from &&
+    bestTo === to &&
+    (!bestPromo || bestPromo === targetPromo);
+
+  const cpLoss =
+    isTerminalMate || playedWasBest
+      ? 0
+      : Math.max(0, Math.round(evalBeforeMoverCp - evalAfterMoverCp));
+
+  const evalSwingCp = Math.abs(evalAfterWhiteCp - evalBeforeWhiteCp);
+  const mateBeforeForMover = beforeEval?.mateIn ? beforeEval.mateIn * moverSign : undefined;
+  const mateAfterForMover = afterEval?.mateIn ? afterEval.mateIn * moverSign : undefined;
+
+  const makeResult = (classification: UnifiedMoveClass, finalCpLoss = cpLoss): UnifiedClassifyOutput => ({
+    classification,
+    cpLoss: Number.isFinite(finalCpLoss) ? Math.max(0, Math.round(finalCpLoss)) : 0,
+    evalBeforeWhiteCp,
+    evalAfterWhiteCp,
+    evalSwingCp,
+    bestFrom,
+    bestTo,
+    bestPromo,
+    mateBefore: beforeEval?.mateIn,
+    mateAfter: afterEval?.mateIn,
+  });
+
+  if (isTerminalMate) {
+    return makeResult('great', 0);
+  }
+
+  if (typeof legalMovesCount === 'number' && legalMovesCount <= 1) {
+    return makeResult('good', 0);
+  }
+
+  const losingAlreadyToForcedMate =
+    mateBeforeForMover !== undefined && mateBeforeForMover < 0 && playedWasBest;
+
+  if (
+    !losingAlreadyToForcedMate &&
+    !playedWasBest &&
+    ((mateAfterForMover !== undefined && mateAfterForMover < 0) ||
+      (mateBeforeForMover !== undefined &&
+        mateBeforeForMover > 0 &&
+        (mateAfterForMover === undefined || mateAfterForMover <= 0) &&
+        evalAfterMoverCp < 250) ||
+      (mateBeforeForMover === undefined && cpLoss >= 250) ||
+      (evalBeforeMoverCp >= 300 && evalAfterMoverCp < 50 && cpLoss >= 220))
+  ) {
+    return makeResult('blunder');
+  }
+
+  if (
+    !playedWasBest &&
+    mateBeforeForMover !== undefined &&
+    mateBeforeForMover > 0 &&
+    (mateAfterForMover === undefined || mateAfterForMover <= 0)
+  ) {
+    return makeResult('mistake');
+  }
+
+  if (plyIndex < 8 && cpLoss <= 35 && Math.abs(evalBeforeWhiteCp) < 160) {
+    return makeResult('book');
+  }
+
+  if (cpLoss >= 100) {
+    return makeResult('mistake');
+  }
+
+  if (cpLoss >= 45) {
+    return makeResult('inaccuracy');
+  }
+
+  // Brilliant (!!): genuine SEE sacrifice + full-window depth-4 soundness & alternative gap verification
+  if (
+    cpLoss <= 25 &&
+    (evalAfterMoverCp >= 60 || (mateAfterForMover !== undefined && mateAfterForMover > 0)) &&
+    detectGenuineSacrifice(fenBefore, from, to, promotion)
+  ) {
+    const deepAfter = searchPositionWithPv(
+      fenAfter,
+      {
+        maxDepth: 4,
+        budgetMs: 400,
+        quiescencePlies: 5,
+        deterministic: true,
+        maxNodes: 220000,
+      },
+      1
+    );
+    const deepSecond = searchPositionWithPv(
+      fenBefore,
+      {
+        maxDepth: 4,
+        budgetMs: 400,
+        quiescencePlies: 5,
+        deterministic: true,
+        maxNodes: 220000,
+        excludeMove: { from, to, promo: targetPromo },
+      },
+      1
+    );
+
+    if (deepAfter && deepSecond) {
+      const vPlayed = deepAfter.scoreCpWhite * moverSign;
+      const vSecond = deepSecond.scoreCpWhite * moverSign;
+      const vMateForMover = deepAfter.mateIn ? deepAfter.mateIn * moverSign : undefined;
+      const vCpLoss = playedWasBest ? 0 : Math.max(0, Math.round(vSecond - vPlayed));
+
+      if (vPlayed <= -20000 || (!playedWasBest && vCpLoss >= 250)) {
+        return makeResult('blunder', Math.max(cpLoss, vCpLoss));
+      }
+      if (!playedWasBest && vCpLoss >= 100) {
+        return makeResult('mistake', Math.max(cpLoss, vCpLoss));
+      }
+      if (
+        (vPlayed >= 80 || (vMateForMover !== undefined && vMateForMover > 0)) &&
+        vSecond < 750 &&
+        vPlayed - vSecond >= 85
+      ) {
+        return makeResult('brilliant', 0);
+      }
+    }
+  }
+
+  // Great (!): strictly best/near-best move that is NOT an obvious recapture/free capture and beats alternatives by >= 95cp
+  const isCapture = Boolean(captured);
+  const givesCheck = san.includes('+') || san.includes('#');
+  const isImmediateRecapture = Boolean(
+    lastMove?.captured && captured && to === lastMove.to
+  );
+
+  let isObviousFreeCapture = false;
+  if (isCapture && !givesCheck && captured && evalAfterMoverCp < 25000) {
+    const capVal = PIECE_VALUES[captured as PieceSymbol] || 0;
+    if (capVal >= 100) {
+      try {
+        const afterCh = new Chess(fenAfter);
+        const { r, c } = algebraicToRC(to);
+        const seeLoss = computeSeeGainOnSquare(afterCh.board(), r, c, afterCh.turn());
+        if (capVal - seeLoss >= 100) {
+          isObviousFreeCapture = true;
+        }
+      } catch {
+        isObviousFreeCapture = false;
+      }
+    }
+  }
+
+  if (
+    cpLoss <= 10 &&
+    plyIndex >= 8 &&
+    evalAfterMoverCp >= -60 &&
+    Math.abs(evalBeforeMoverCp) < 750 &&
+    !isImmediateRecapture &&
+    !isObviousFreeCapture
+  ) {
+    const secondRes = getSecondBestEval
+      ? getSecondBestEval()
+      : searchPositionWithPv(
+          fenBefore,
+          {
+            ...UNIFIED_EVAL_CONFIG,
+            excludeMove: { from, to, promo: targetPromo },
+          },
+          1
+        );
+
+    if (secondRes) {
+      const secondMoverCp = secondRes.scoreCpWhite * moverSign;
+      const conservativePlayedCp = Math.min(evalBeforeMoverCp, evalAfterMoverCp);
+      const gap = conservativePlayedCp - secondMoverCp;
+      if (gap >= 95 && secondMoverCp < 750) {
+        return makeResult('great');
+      }
+    }
+  }
+
+  return makeResult('good');
+}
+
 export function evaluatePlayedMove(
   fenBefore: string,
   from: string,
   to: string,
   promotion?: 'q' | 'r' | 'b' | 'n',
-  lastMove?: { to: string; captured?: string }
+  lastMove?: { to: string; captured?: string },
+  plyIndex = 8
 ): { quality: MoveQuality; cpLoss: number } {
-  const chess = new Chess(fenBefore);
-  const legalMoves = chess.moves({ verbose: true });
-
-  if (legalMoves.length === 0) {
-    return { quality: 'neutral', cpLoss: 0 };
+  let chess: Chess;
+  try {
+    chess = new Chess(fenBefore);
+  } catch {
+    return { quality: 'good', cpLoss: 0 };
   }
-  if (legalMoves.length === 1) {
+
+  const legalMoves = chess.moves({ verbose: true });
+  if (legalMoves.length === 0 || legalMoves.length === 1) {
     return { quality: 'good', cpLoss: 0 };
   }
 
@@ -406,135 +684,67 @@ export function evaluatePlayedMove(
     (m) => m.from === from && m.to === to && (!m.promotion || m.promotion === targetPromo)
   );
   if (!playedMoveObj) {
-    return { quality: 'neutral', cpLoss: 0 };
-  }
-
-  chess.move(playedMoveObj);
-  const isCheckmatePlayed = chess.isCheckmate();
-  chess.undo();
-
-  if (isCheckmatePlayed) {
-    return { quality: 'great', cpLoss: 0 };
-  }
-
-  // Use high-speed 0x88 Depth-3 search with quiescence for fast & accurate move grading
-  const searchRes = searchBestMoves(fenBefore, {
-    maxDepth: 3,
-    budgetMs: 65,
-    quiescencePlies: 4,
-  });
-
-  if (!searchRes || searchRes.ranked.length === 0) {
     return { quality: 'good', cpLoss: 0 };
   }
 
-  const bestScore = searchRes.ranked[0].scoreCp;
-  const secondBestScore = searchRes.ranked[1]?.scoreCp ?? bestScore;
+  const movingColor = chess.turn();
+  chess.move(playedMoveObj);
+  const fenAfter = chess.fen();
+  const isTerminalMate = chess.isCheckmate();
+  const isTerminalDraw = chess.isDraw();
 
-  const playedEntry = searchRes.ranked.find(
-    (e) =>
-      e.from === from &&
-      e.to === to &&
-      (!e.promo || e.promo === targetPromo)
-  );
-
-  const playedScore = playedEntry ? playedEntry.scoreCp : bestScore - 120;
-  const cpLoss = Math.max(0, Math.round(bestScore - playedScore));
-  const moveNumber = chess.moveNumber();
-
-  if (
-    cpLoss >= 250 ||
-    (playedScore <= -20000 && bestScore > -20000) ||
-    (bestScore >= 25000 && playedScore < 500)
-  ) {
-    return { quality: 'blunder', cpLoss };
+  if (isTerminalMate) {
+    return { quality: 'great', cpLoss: 0 };
   }
 
-  if (moveNumber < 4 && playedScore < 25000 && cpLoss <= 80) {
-    return { quality: 'book', cpLoss };
+  const beforeEval = searchPositionWithPv(fenBefore, UNIFIED_EVAL_CONFIG, 1);
+  if (!beforeEval) {
+    return { quality: 'good', cpLoss: 0 };
   }
 
-  if (cpLoss >= 100) {
-    return { quality: 'mistake', cpLoss };
-  }
+  const playedWasBest =
+    beforeEval.bestFrom === from &&
+    beforeEval.bestTo === to &&
+    (!beforeEval.bestPromo || beforeEval.bestPromo === targetPromo);
 
-  // Check Brilliant (!!): genuine SEE sacrifice + verified depth-5 soundness + not already winning without it
-  if (
-    cpLoss <= 30 &&
-    (playedScore >= 50 || playedScore >= 25000) &&
-    secondBestScore < 750 &&
-    detectGenuineSacrifice(fenBefore, from, to, promotion)
-  ) {
-    const verifyRes = searchBestMoves(fenBefore, {
-      maxDepth: 5,
-      budgetMs: 110,
-      quiescencePlies: 6,
-    });
-    if (verifyRes && verifyRes.ranked.length > 0) {
-      const vBest = verifyRes.ranked[0].scoreCp;
-      const vSecond = verifyRes.ranked[1]?.scoreCp ?? vBest;
-      const vPlayedEntry = verifyRes.ranked.find(
-        (e) =>
-          e.from === from &&
-          e.to === to &&
-          (!e.promo || e.promo === targetPromo)
-      );
-      const vPlayed = vPlayedEntry ? vPlayedEntry.scoreCp : vBest - 120;
-      const vCpLoss = Math.max(0, Math.round(vBest - vPlayed));
-
-      if (
-        vCpLoss <= 15 &&
-        (vPlayed >= 80 || vPlayed >= 25000) &&
-        vSecond < 750 &&
-        vBest - vSecond >= 85
-      ) {
-        return { quality: 'brilliant', cpLoss: vCpLoss };
+  const afterEval: EnginePvResult | null = isTerminalDraw
+    ? {
+        scoreCpWhite: 0,
+        bestFrom: from,
+        bestTo: to,
+        pv: [],
+        reachedDepth: UNIFIED_EVAL_CONFIG.maxDepth,
       }
-      if (vCpLoss >= 250) {
-        return { quality: 'blunder', cpLoss: vCpLoss };
-      }
-      if (vCpLoss >= 100) {
-        return { quality: 'mistake', cpLoss: vCpLoss };
-      }
-    }
-  }
+    : playedWasBest
+      ? beforeEval
+      : searchPositionWithPv(fenAfter, UNIFIED_EVAL_CONFIG, 1);
 
-  const gap = bestScore - secondBestScore;
-  const isCapture = Boolean(playedMoveObj.captured);
-  const givesCheck =
-    playedMoveObj.san.includes('+') || playedMoveObj.san.includes('#');
-  const isImmediateRecapture = Boolean(
-    lastMove?.captured && playedMoveObj.captured && playedMoveObj.to === lastMove.to
-  );
+  const res = classifyMoveUnified({
+    fenBefore,
+    fenAfter,
+    from,
+    to,
+    promotion,
+    captured: playedMoveObj.captured,
+    san: playedMoveObj.san,
+    color: movingColor,
+    plyIndex,
+    legalMovesCount: legalMoves.length,
+    lastMove,
+    beforeEval,
+    afterEval,
+    isTerminalMate,
+    isTerminalDraw,
+  });
 
-  // Check if this is an obvious free capture using accurate board state rather than naive max capture
-  const capVal = playedMoveObj.captured ? PIECE_VALUES[playedMoveObj.captured] : 0;
-  let isObviousFreeCapture = false;
-  if (isCapture && !givesCheck && capVal >= 100 && secondBestScore > -120 && playedScore < 25000) {
-    chess.move(playedMoveObj);
-    const { r, c } = algebraicToRC(to);
-    const seeLoss = computeSeeGainOnSquare(chess.board(), r, c, chess.turn());
-    chess.undo();
-    if (capVal - seeLoss >= 100) {
-      isObviousFreeCapture = true;
-    }
-  }
+  const quality: MoveQuality =
+    res.classification === 'inaccuracy'
+      ? 'neutral'
+      : res.classification === 'missed_win'
+        ? 'mistake'
+        : res.classification;
 
-  if (
-    cpLoss <= 15 &&
-    gap >= 65 &&
-    playedScore >= -60 &&
-    !isImmediateRecapture &&
-    !isObviousFreeCapture
-  ) {
-    return { quality: 'great', cpLoss };
-  }
-
-  if (cpLoss <= 45) {
-    return { quality: 'good', cpLoss };
-  }
-
-  return { quality: 'neutral', cpLoss };
+  return { quality, cpLoss: res.cpLoss };
 }
 
 const BOT_SEARCH_PROFILES: Record<Exclude<BotId, 'dummy'>, SearchConfig> = {
@@ -685,9 +895,11 @@ function getCachedBestMoveSan(fenBefore: string): string | null {
   const legalMoves = chess.moves({ verbose: true });
   let san: string | null = null;
   const searchRes = searchBestMoves(fenBefore, {
-    maxDepth: 4,
-    budgetMs: 65,
+    maxDepth: 3,
+    budgetMs: 350,
     quiescencePlies: 4,
+    deterministic: true,
+    maxNodes: 150000,
   });
   if (searchRes) {
     const matched = legalMoves.find(
@@ -740,7 +952,7 @@ export function computePostGameReview(
   }
 
   const avgLoss = playerLosses.reduce((acc, v) => acc + v, 0) / playerLosses.length;
-  const rawAcc = 100 * Math.exp(-avgLoss / 180);
+  const rawAcc = 100 * Math.exp(-avgLoss / 175);
   const accuracyPct = Math.max(10, Math.min(99, Math.round(rawAcc)));
 
   return { accuracyPct, bestMoveByPly };

@@ -1618,7 +1618,16 @@ export function CoachReviewStudio({
                       ['Imprecisioni (?!) ', 'inaccuracy', analysis.whiteStats.inaccuracy, analysis.blackStats.inaccuracy],
                       ['Errori (?)', 'mistake', analysis.whiteStats.mistake, analysis.blackStats.mistake],
                       ['Blunder (??)', 'blunder', analysis.whiteStats.blunder, analysis.blackStats.blunder],
-                      ['Vittorie mancate (✕)', 'missed_win', analysis.whiteStats.missedWin, analysis.blackStats.missedWin],
+                      ...(analysis.whiteStats.missedWin > 0 || analysis.blackStats.missedWin > 0
+                        ? ([
+                            [
+                              'Vittorie mancate (✕)',
+                              'missed_win',
+                              analysis.whiteStats.missedWin,
+                              analysis.blackStats.missedWin,
+                            ],
+                          ] as Array<[string, CoachMoveClass, number, number]>)
+                        : []),
                     ] as Array<[string, CoachMoveClass, number, number]>
                   ).map(([label, cls, wVal, bVal]) => (
                     <div key={label} className="grid grid-cols-3 px-3.5 py-2 items-center">

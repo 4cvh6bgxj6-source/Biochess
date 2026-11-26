@@ -45,22 +45,22 @@ export function UsernameGateModal({
   }
 
   return (
-    <div className="min-h-[calc(100vh-56px)] flex items-center justify-center px-4 py-8 bg-[#302E2B]">
-      <div className="w-full max-w-md bg-[#262421] border border-[#3C3A36] rounded-lg p-7 sm:p-8 shadow-2xl flex flex-col items-center">
+    <div className="min-h-[calc(100vh-56px)] flex items-center justify-center px-3 sm:px-4 py-6 sm:py-8 bg-[#302E2B]">
+      <div className="w-full max-w-md bg-[#262421] border border-[#3C3A36] rounded-lg p-5 sm:p-8 shadow-2xl flex flex-col items-center">
         {/* Large Official BioChess Logo */}
-        <div className="relative w-44 h-44 sm:w-52 sm:h-52 rounded-xl overflow-hidden border border-[#3C3A36] bg-[#0F1419] shadow-lg mb-5">
+        <div className="relative w-32 h-32 sm:w-52 sm:h-52 rounded-xl overflow-hidden border border-[#3C3A36] bg-[#0F1419] shadow-lg mb-4 sm:mb-5">
           <Image
             src={BIOCHESS_LOGO}
             alt="Logo ufficiale BioChess"
             fill
             priority
-            sizes="(max-width: 640px) 176px, 208px"
+            sizes="(max-width: 640px) 128px, 208px"
             className="object-cover"
             referrerPolicy="no-referrer"
           />
         </div>
 
-        <h1 className="text-3xl font-extrabold tracking-tight text-white text-center">
+        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white text-center">
           BioChess
         </h1>
 
