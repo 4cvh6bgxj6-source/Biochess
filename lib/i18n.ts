@@ -72,6 +72,7 @@ export interface UiDictionary {
   trainingComplete: string;
   reviewTag: string;
   analyzeWithCoach: string;
+  premoveLabel: string;
 }
 
 const IT: UiDictionary = {
@@ -148,6 +149,7 @@ const IT: UiDictionary = {
   trainingComplete: 'Allenamento completato',
   reviewTag: 'Revisione Live',
   analyzeWithCoach: 'Revisione Coach',
+  premoveLabel: 'Premossa',
 };
 
 const EN: UiDictionary = {
@@ -224,6 +226,7 @@ const EN: UiDictionary = {
   trainingComplete: 'Training completed',
   reviewTag: 'Live Review',
   analyzeWithCoach: 'Coach Review',
+  premoveLabel: 'Premove',
 };
 
 const ES: UiDictionary = {

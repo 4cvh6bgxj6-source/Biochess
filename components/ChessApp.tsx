@@ -144,6 +144,10 @@ export function ChessApp() {
   const prevIncomingChallengeIdsRef = useRef<Set<string>>(new Set());
   const lastLocallyPlayedMoveRef = useRef<{ gameId: string; ply: number } | null>(null);
   const submittingMoveRef = useRef<boolean>(false);
+  const [isSubmittingMove, setIsSubmittingMove] = useState(false);
+  const authUserRef = useRef<User | null>(null);
+  const activeGameRef = useRef<GameState | null>(null);
+  const activeGameDocRef = useRef<GameDocSnapshot | null>(null);
   const activeLangRef = useRef<string>('it');
   const [optimisticMoveState, setOptimisticMoveState] = useState<{
     gameId: string;
@@ -249,6 +253,9 @@ export function ChessApp() {
         knownActivePvpIdsRef.current = new Set();
         settlingGameIdsRef.current.clear();
         settledGameIdsRef.current.clear();
+        submittingMoveRef.current = false;
+        setIsSubmittingMove(false);
+        setOptimisticMoveState(null);
       }
     });
     return () => unsub();
@@ -537,13 +544,24 @@ export function ChessApp() {
     prevChatCountRef.current[gId] = activeGame.chat.length;
   }, [activeGame, profileUsername]);
 
-  const activeDocMovesSynced = Boolean(
+  const isBoardSynced = Boolean(
     activeGame &&
       activeGameDoc &&
       activeGameDoc.id === activeGame.id &&
       activeMovesState.gameId === activeGame.id &&
-      activeGameDoc.movesCount >= 1 &&
-      activeGame.moves.length === activeGameDoc.movesCount
+      activeGame.moves.length === activeGameDoc.movesCount &&
+      !isSubmittingMove &&
+      !(
+        optimisticMoveState &&
+        optimisticMoveState.gameId === activeGame.id &&
+        activeMovesState.moves.length <= optimisticMoveState.baseMovesLen
+      )
+  );
+
+  const activeDocMovesSynced = Boolean(
+    isBoardSynced &&
+      activeGameDoc &&
+      activeGameDoc.movesCount >= 1
   );
 
   const isClockRunning = Boolean(
@@ -565,8 +583,17 @@ export function ChessApp() {
       : (activeGame?.blackTimeMs ?? 0);
 
   useEffect(() => {
+    authUserRef.current = authUser;
+  }, [authUser]);
+
+  useEffect(() => {
     latestGameRef.current = activeGame;
+    activeGameRef.current = activeGame;
   }, [activeGame]);
+
+  useEffect(() => {
+    activeGameDocRef.current = activeGameDoc;
+  }, [activeGameDoc]);
 
   useEffect(() => {
     liveTimesRef.current = { w: whiteTimeMs, b: blackTimeMs };
@@ -865,120 +892,142 @@ export function ChessApp() {
     soundFX.setMuted(next);
   }
 
-  async function handlePlayerMove(
-    from: string,
-    to: string,
-    promotion?: 'q' | 'r' | 'b' | 'n'
-  ) {
-    if (!authUser || !activeGame || activeGame.status !== 'active') return;
-    if (submittingMoveRef.current) return;
-    soundFX.unlock();
+  const handlePlayerMove = useCallback(
+    async (from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n') => {
+      const currentUser = authUserRef.current;
+      const snapshotGame = activeGameRef.current;
+      const snapshotDoc = activeGameDocRef.current;
+      if (!currentUser || !snapshotGame || snapshotGame.status !== 'active') return;
+      if (submittingMoveRef.current) return;
+      soundFX.unlock();
 
-    const docMovesCount =
-      activeGameDoc && activeGameDoc.id === activeGame.id
-        ? activeGameDoc.movesCount
-        : activeGame.moves.length;
-    const baseMovesLen = Math.max(activeGame.moves.length, docMovesCount);
-    const snapshotGame = activeGame;
+      const docMovesCount =
+        snapshotDoc && snapshotDoc.id === snapshotGame.id
+          ? snapshotDoc.movesCount
+          : snapshotGame.moves.length;
+      const baseMovesLen = Math.max(snapshotGame.moves.length, docMovesCount);
 
-    // Preview move locally for 0ms visual & audio responsiveness (even before Firestore commits)
-    let playedLocally = false;
-    try {
-      const previewChess = new Chess(snapshotGame.fen);
-      const movingColor = previewChess.turn();
-      const previewRes = previewChess.move({
-        from,
-        to,
-        promotion: promotion || 'q',
-      });
-      if (previewRes) {
-        playedLocally = true;
-        lastLocallyPlayedMoveRef.current = {
-          gameId: snapshotGame.id,
-          ply: baseMovesLen + 1,
-        };
-        setOptimisticMoveState({
-          gameId: snapshotGame.id,
-          baseMovesLen,
-          fen: previewChess.fen(),
-          pgn: previewChess.pgn(),
-          turn: previewChess.turn(),
-          move: {
-            san: previewRes.san,
-            from: previewRes.from,
-            to: previewRes.to,
-            fen: previewChess.fen(),
-            color: movingColor,
-            captured: previewRes.captured,
-            promotion: previewRes.promotion,
-            timestamp: Date.now(),
-          },
-        });
-        const isOver = previewChess.isGameOver();
-        if (isOver) {
-          soundFX.playGameOver(true);
-        } else if (previewChess.inCheck()) {
-          soundFX.playCheck(Boolean(previewRes.captured));
-        } else if (previewRes.flags.includes('k') || previewRes.flags.includes('q')) {
-          soundFX.playCastle();
-        } else if (previewRes.promotion) {
-          soundFX.playPromote();
-        } else if (previewRes.captured) {
-          soundFX.playCapture();
+      let liveWhiteMs = snapshotGame.whiteTimeMs;
+      let liveBlackMs = snapshotGame.blackTimeMs;
+      if (
+        snapshotGame.timeControl !== 'unlimited' &&
+        baseMovesLen >= 1 &&
+        snapshotGame.lastMoveAt > 0
+      ) {
+        const elapsed = Math.max(0, Date.now() - snapshotGame.lastMoveAt);
+        if (snapshotGame.turn === 'w') {
+          liveWhiteMs = Math.max(0, snapshotGame.whiteTimeMs - elapsed);
         } else {
-          soundFX.playMove();
+          liveBlackMs = Math.max(0, snapshotGame.blackTimeMs - elapsed);
         }
       }
-    } catch {
-      // let submitMoveToFirestore report invalid moves if any
-    }
 
-    submittingMoveRef.current = true;
-    try {
-      const res = await submitMoveToFirestore({
-        game: snapshotGame,
-        uid: authUser.uid,
-        from,
-        to,
-        promotion,
-        liveWhiteMs: whiteTimeMs,
-        liveBlackMs: blackTimeMs,
-        expectedMovesCount: docMovesCount,
-      });
-      if (!res.ok) {
+      // Preview move locally for 0ms visual & audio responsiveness (even before Firestore commits)
+      let playedLocally = false;
+      try {
+        const previewChess = new Chess(snapshotGame.fen);
+        const movingColor = previewChess.turn();
+        const previewRes = previewChess.move({
+          from,
+          to,
+          promotion: promotion || 'q',
+        });
+        if (previewRes) {
+          playedLocally = true;
+          lastLocallyPlayedMoveRef.current = {
+            gameId: snapshotGame.id,
+            ply: baseMovesLen + 1,
+          };
+          setOptimisticMoveState({
+            gameId: snapshotGame.id,
+            baseMovesLen,
+            fen: previewChess.fen(),
+            pgn: previewChess.pgn(),
+            turn: previewChess.turn(),
+            move: {
+              san: previewRes.san,
+              from: previewRes.from,
+              to: previewRes.to,
+              fen: previewChess.fen(),
+              color: movingColor,
+              captured: previewRes.captured,
+              promotion: previewRes.promotion,
+              timestamp: Date.now(),
+            },
+          });
+          const isOver = previewChess.isGameOver();
+          if (isOver) {
+            soundFX.playGameOver(true);
+          } else if (previewChess.inCheck()) {
+            soundFX.playCheck(Boolean(previewRes.captured));
+          } else if (previewRes.flags.includes('k') || previewRes.flags.includes('q')) {
+            soundFX.playCastle();
+          } else if (previewRes.promotion) {
+            soundFX.playPromote();
+          } else if (previewRes.captured) {
+            soundFX.playCapture();
+          } else {
+            soundFX.playMove();
+          }
+        }
+      } catch {
+        // let submitMoveToFirestore report invalid moves if any
+      }
+
+      submittingMoveRef.current = true;
+      setIsSubmittingMove(true);
+      try {
+        const res = await submitMoveToFirestore({
+          game: snapshotGame,
+          uid: currentUser.uid,
+          from,
+          to,
+          promotion,
+          liveWhiteMs,
+          liveBlackMs,
+          expectedMovesCount: docMovesCount,
+        });
+        if (!res.ok) {
+          if (playedLocally) {
+            lastLocallyPlayedMoveRef.current = null;
+            setOptimisticMoveState((prev) =>
+              prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen
+                ? null
+                : prev
+            );
+          }
+          setGameError(res.error);
+          setTimeout(() => setGameError(null), 3000);
+          return;
+        }
+        if (snapshotGame.isBotGame) {
+          humanMoveMetaRef.current = {
+            gameId: snapshotGame.id,
+            ply: baseMovesLen + 1,
+            quality: res.quality,
+            captured: res.captured,
+            inCheck: res.inCheck,
+          };
+        }
+      } catch (err) {
         if (playedLocally) {
           lastLocallyPlayedMoveRef.current = null;
           setOptimisticMoveState((prev) =>
-            prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen ? null : prev
+            prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen
+              ? null
+              : prev
           );
         }
-        setGameError(res.error);
-        setTimeout(() => setGameError(null), 3000);
-        return;
+        console.error('Move submission warning:', err);
+        setGameError('Impossibile completare la mossa: controlla connessione o orologio.');
+        setTimeout(() => setGameError(null), 3500);
+      } finally {
+        submittingMoveRef.current = false;
+        setIsSubmittingMove(false);
       }
-      if (snapshotGame.isBotGame) {
-        humanMoveMetaRef.current = {
-          gameId: snapshotGame.id,
-          ply: baseMovesLen + 1,
-          quality: res.quality,
-          captured: res.captured,
-          inCheck: res.inCheck,
-        };
-      }
-    } catch (err) {
-      if (playedLocally) {
-        lastLocallyPlayedMoveRef.current = null;
-        setOptimisticMoveState((prev) =>
-          prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen ? null : prev
-        );
-      }
-      console.error('Move submission warning:', err);
-      setGameError('Impossibile completare la mossa: controlla connessione o orologio.');
-      setTimeout(() => setGameError(null), 3500);
-    } finally {
-      submittingMoveRef.current = false;
-    }
-  }
+    },
+    []
+  );
 
   const needsUsernameChoice = Boolean(authReady && authUser && profileLoaded && !profile);
 
@@ -1215,9 +1264,10 @@ export function ChessApp() {
                   dict={dict}
                   whiteTimeMs={whiteTimeMs}
                   blackTimeMs={blackTimeMs}
+                  isBoardSynced={isBoardSynced}
                   muted={muted}
                   onToggleMute={handleToggleMute}
-                  onMove={(from, to, promo) => void handlePlayerMove(from, to, promo)}
+                  onMove={handlePlayerMove}
                   onSendChat={(text) => {
                     if (!authUser) return;
                     void sendPlayerChatAndMaybeBotReply(

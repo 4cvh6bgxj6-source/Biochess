@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
 import type { PieceSymbol, Square } from 'chess.js';
 import { motion } from 'motion/react';
@@ -24,13 +24,22 @@ export interface BoardHighlight {
   color: ArrowColor;
 }
 
+export interface PremoveItem {
+  from: string;
+  to: string;
+  promotion?: 'q' | 'r' | 'b' | 'n';
+}
+
 interface ChessBoardProps {
   fen: string;
   moves?: GameMove[];
   activeMoveCount?: number;
   orientation: PieceColor;
   canInteract: boolean;
+  canPremove?: boolean;
   playerColor: PieceColor | null;
+  premoves?: PremoveItem[];
+  onPremovesChange?: (premoves: PremoveItem[]) => void;
   lastMove?: { from: string; to: string; quality?: MoveQuality } | null;
   arrowMode?: boolean;
   arrows?: BoardArrow[];
@@ -208,6 +217,191 @@ function pickArrowColor(e: { shiftKey?: boolean; altKey?: boolean; ctrlKey?: boo
   return 'orange';
 }
 
+type BoardCellPiece = { type: 'p' | 'n' | 'b' | 'r' | 'q' | 'k'; color: PieceColor } | null;
+
+function squareToRowCol(square: string): { row: number; col: number } | null {
+  if (square.length !== 2) return null;
+  const col = FILES.indexOf(square[0]);
+  const rank = parseInt(square[1], 10);
+  if (col < 0 || Number.isNaN(rank) || rank < 1 || rank > 8) return null;
+  return { row: 8 - rank, col };
+}
+
+function rowColToSquare(row: number, col: number): string | null {
+  if (row < 0 || row > 7 || col < 0 || col > 7) return null;
+  return `${FILES[col]}${8 - row}`;
+}
+
+function buildProjectedPremoveState(
+  rawBoard: ReturnType<Chess['board']>,
+  premoves: PremoveItem[],
+  playerColor: PieceColor | null
+) {
+  const projected: BoardCellPiece[][] = rawBoard.map((row) =>
+    row.map((cell) =>
+      cell ? { type: cell.type as 'p' | 'n' | 'b' | 'r' | 'q' | 'k', color: cell.color } : null
+    )
+  );
+  const premoveSquares = new Set<string>();
+  const movedRealOriginals = new Set<string>();
+  const premovedDestPieces = new Map<string, { type: 'p' | 'n' | 'b' | 'r' | 'q' | 'k'; color: PieceColor }>();
+
+  if (!playerColor || premoves.length === 0) {
+    return { projected, premoveSquares, movedRealOriginals, premovedDestPieces };
+  }
+
+  for (const pm of premoves) {
+    const fromRC = squareToRowCol(pm.from);
+    const toRC = squareToRowCol(pm.to);
+    if (!fromRC || !toRC) break;
+    const piece = projected[fromRC.row]?.[fromRC.col];
+    if (!piece || piece.color !== playerColor) break;
+
+    if (!premovedDestPieces.has(pm.from)) {
+      movedRealOriginals.add(pm.from);
+    } else {
+      premovedDestPieces.delete(pm.from);
+    }
+
+    projected[fromRC.row][fromRC.col] = null;
+
+    // En passant premove heuristic
+    if (piece.type === 'p' && fromRC.col !== toRC.col && !projected[toRC.row][toRC.col]) {
+      projected[fromRC.row][toRC.col] = null;
+    }
+
+    const nextPiece = {
+      type: (pm.promotion || piece.type) as 'p' | 'n' | 'b' | 'r' | 'q' | 'k',
+      color: piece.color,
+    };
+    projected[toRC.row][toRC.col] = nextPiece;
+    premovedDestPieces.set(pm.to, nextPiece);
+
+    if (piece.type === 'k') {
+      const moveRook = (rFromSq: string, rToSq: string) => {
+        const rf = squareToRowCol(rFromSq);
+        const rt = squareToRowCol(rToSq);
+        if (!rf || !rt) return;
+        const rook = projected[rf.row]?.[rf.col];
+        if (rook && rook.type === 'r' && rook.color === piece.color) {
+          if (!premovedDestPieces.has(rFromSq)) {
+            movedRealOriginals.add(rFromSq);
+          } else {
+            premovedDestPieces.delete(rFromSq);
+          }
+          projected[rf.row][rf.col] = null;
+          projected[rt.row][rt.col] = rook;
+          premovedDestPieces.set(rToSq, rook);
+        }
+      };
+      if (pm.from === 'e1' && pm.to === 'g1') moveRook('h1', 'f1');
+      else if (pm.from === 'e1' && pm.to === 'c1') moveRook('a1', 'd1');
+      else if (pm.from === 'e8' && pm.to === 'g8') moveRook('h8', 'f8');
+      else if (pm.from === 'e8' && pm.to === 'c8') moveRook('a8', 'd8');
+    }
+
+    premoveSquares.add(pm.from);
+    premoveSquares.add(pm.to);
+  }
+
+  return { projected, premoveSquares, movedRealOriginals, premovedDestPieces };
+}
+
+function getPseudoLegalPremoveTargets(
+  projected: BoardCellPiece[][],
+  fromSquare: string,
+  playerColor: PieceColor,
+  chess: Chess
+): Map<string, boolean> {
+  const targets = new Map<string, boolean>();
+  const rc = squareToRowCol(fromSquare);
+  if (!rc) return targets;
+  const piece = projected[rc.row]?.[rc.col];
+  if (!piece || piece.color !== playerColor) return targets;
+
+  const addSquare = (r: number, c: number) => {
+    const sq = rowColToSquare(r, c);
+    if (!sq || sq === fromSquare) return;
+    const occ = projected[r]?.[c];
+    targets.set(sq, Boolean(occ && occ.color !== playerColor));
+  };
+
+  const addRay = (dr: number, dc: number) => {
+    for (let step = 1; step < 8; step++) {
+      const nr = rc.row + dr * step;
+      const nc = rc.col + dc * step;
+      if (nr < 0 || nr > 7 || nc < 0 || nc > 7) break;
+      addSquare(nr, nc);
+    }
+  };
+
+  if (piece.type === 'p') {
+    const dir = piece.color === 'w' ? -1 : 1;
+    addSquare(rc.row + dir, rc.col);
+    const isStartRank =
+      (piece.color === 'w' && rc.row === 6) || (piece.color === 'b' && rc.row === 1);
+    if (isStartRank) {
+      addSquare(rc.row + dir * 2, rc.col);
+    }
+    addSquare(rc.row + dir, rc.col - 1);
+    addSquare(rc.row + dir, rc.col + 1);
+  } else if (piece.type === 'n') {
+    const jumps = [
+      [-2, -1],
+      [-2, 1],
+      [-1, -2],
+      [-1, 2],
+      [1, -2],
+      [1, 2],
+      [2, -1],
+      [2, 1],
+    ];
+    for (const [dr, dc] of jumps) {
+      addSquare(rc.row + dr, rc.col + dc);
+    }
+  } else if (piece.type === 'b') {
+    addRay(-1, -1);
+    addRay(-1, 1);
+    addRay(1, -1);
+    addRay(1, 1);
+  } else if (piece.type === 'r') {
+    addRay(-1, 0);
+    addRay(1, 0);
+    addRay(0, -1);
+    addRay(0, 1);
+  } else if (piece.type === 'q') {
+    addRay(-1, -1);
+    addRay(-1, 1);
+    addRay(1, -1);
+    addRay(1, 1);
+    addRay(-1, 0);
+    addRay(1, 0);
+    addRay(0, -1);
+    addRay(0, 1);
+  } else if (piece.type === 'k') {
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        addSquare(rc.row + dr, rc.col + dc);
+      }
+    }
+    const rights = chess.getCastlingRights(playerColor);
+    if (playerColor === 'w' && fromSquare === 'e1') {
+      const h1 = projected[7]?.[7];
+      const a1 = projected[7]?.[0];
+      if (rights.k && h1?.type === 'r' && h1.color === 'w') targets.set('g1', false);
+      if (rights.q && a1?.type === 'r' && a1.color === 'w') targets.set('c1', false);
+    } else if (playerColor === 'b' && fromSquare === 'e8') {
+      const h8 = projected[0]?.[7];
+      const a8 = projected[0]?.[0];
+      if (rights.k && h8?.type === 'r' && h8.color === 'b') targets.set('g8', false);
+      if (rights.q && a8?.type === 'r' && a8.color === 'b') targets.set('c8', false);
+    }
+  }
+
+  return targets;
+}
+
 function ArrowShape({
   arrow,
   orientation,
@@ -325,7 +519,10 @@ export function ChessBoard({
   activeMoveCount,
   orientation,
   canInteract,
+  canPremove = false,
   playerColor,
+  premoves: controlledPremoves,
+  onPremovesChange,
   lastMove,
   arrowMode = false,
   arrows: controlledArrows,
@@ -341,6 +538,7 @@ export function ChessBoard({
   const boardRef = useRef<HTMLDivElement>(null);
   const justDrewRef = useRef(false);
   const justHandledPointerUpRef = useRef(false);
+  const markPointerUpTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingTapMoveRef = useRef<{ from: string; to: string; pointerId: number } | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [dragFrom, setDragFrom] = useState<string | null>(null);
@@ -360,12 +558,15 @@ export function ChessBoard({
     from: string;
     to: string;
     color: PieceColor;
+    isPremove?: boolean;
   } | null>(null);
 
   const [internalArrows, setInternalArrows] = useState<BoardArrow[]>([]);
   const [internalHighlights, setInternalHighlights] = useState<BoardHighlight[]>([]);
+  const [internalPremoves, setInternalPremoves] = useState<PremoveItem[]>([]);
   const arrows = controlledArrows ?? internalArrows;
   const highlights = controlledHighlights ?? internalHighlights;
+  const premoves = controlledPremoves ?? internalPremoves;
 
   const setArrows = (next: BoardArrow[]) => {
     if (onArrowsChange) onArrowsChange(next);
@@ -375,6 +576,11 @@ export function ChessBoard({
   const setHighlights = (next: BoardHighlight[]) => {
     if (onHighlightsChange) onHighlightsChange(next);
     else setInternalHighlights(next);
+  };
+
+  const setPremoves = (next: PremoveItem[]) => {
+    if (onPremovesChange) onPremovesChange(next);
+    else setInternalPremoves(next);
   };
 
   const [drawingState, setDrawingState] = useState<{
@@ -400,16 +606,71 @@ export function ChessBoard({
     [chess, moves, activeMoveCount]
   );
 
+  const premoveModeActive = !canInteract && canPremove && playerColor !== null;
+
+  const premoveProjected = useMemo(
+    () =>
+      buildProjectedPremoveState(
+        board,
+        premoveModeActive ? premoves : [],
+        playerColor
+      ),
+    [board, premoves, premoveModeActive, playerColor]
+  );
+
+  useEffect(() => {
+    pendingTapMoveRef.current = null;
+    const t = setTimeout(() => {
+      setSelectedSquare(null);
+      setDragFrom(null);
+      setPointerDrag(null);
+    }, 0);
+    return () => clearTimeout(t);
+  }, [fen]);
+
+  useEffect(() => {
+    if (premoves.length === 0) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (onPremovesChange) onPremovesChange([]);
+        else setInternalPremoves([]);
+        setSelectedSquare(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [premoves.length, onPremovesChange]);
+
   const legalTargets = useMemo(() => {
     const activeSquare = selectedSquare || dragFrom;
-    if (!activeSquare || !canInteract || arrowMode) return new Map<string, boolean>();
-    const legal = chess.moves({ square: activeSquare as Square, verbose: true });
-    const map = new Map<string, boolean>();
-    for (const m of legal) {
-      map.set(m.to, Boolean(m.captured));
+    if (!activeSquare || arrowMode) return new Map<string, boolean>();
+    if (canInteract) {
+      const legal = chess.moves({ square: activeSquare as Square, verbose: true });
+      const map = new Map<string, boolean>();
+      for (const m of legal) {
+        map.set(m.to, Boolean(m.captured));
+      }
+      return map;
     }
-    return map;
-  }, [chess, selectedSquare, dragFrom, canInteract, arrowMode]);
+    if (premoveModeActive && playerColor) {
+      return getPseudoLegalPremoveTargets(
+        premoveProjected.projected,
+        activeSquare,
+        playerColor,
+        chess
+      );
+    }
+    return new Map<string, boolean>();
+  }, [
+    chess,
+    selectedSquare,
+    dragFrom,
+    canInteract,
+    premoveModeActive,
+    playerColor,
+    premoveProjected.projected,
+    arrowMode,
+  ]);
 
   const orderedRanks = orientation === 'w' ? RANKS : [...RANKS].reverse();
   const orderedFiles = orientation === 'w' ? FILES : [...FILES].reverse();
@@ -455,29 +716,84 @@ export function ChessBoard({
     if (highlights.length > 0) setHighlights([]);
   }
 
-  function attemptMove(from: string, to: string) {
-    if (!canInteract || arrowMode) return;
-    const legal = chess.moves({ square: from as Square, verbose: true });
-    const matching = legal.filter((m) => m.to === to);
-    if (matching.length === 0) return;
+  function cancelAllPremoves() {
+    if (premoves.length > 0) {
+      setPremoves([]);
+    }
+    setPendingPromotion((prev) => (prev?.isPremove ? null : prev));
+  }
 
-    const isPromotion = matching.some((m) => Boolean(m.promotion));
-    if (isPromotion) {
-      setPendingPromotion({ from, to, color: playerColor || chess.turn() });
+  function attemptMove(from: string, to: string) {
+    if (arrowMode) return;
+
+    if (canInteract) {
+      const legal = chess.moves({ square: from as Square, verbose: true });
+      const matching = legal.filter((m) => m.to === to);
+      if (matching.length === 0) return;
+
+      const isPromotion = matching.some((m) => Boolean(m.promotion));
+      if (isPromotion) {
+        setPendingPromotion({ from, to, color: playerColor || chess.turn(), isPremove: false });
+        setSelectedSquare(null);
+        setDragFrom(null);
+        setPointerDrag(null);
+        return;
+      }
+
+      clearAnnotations();
       setSelectedSquare(null);
       setDragFrom(null);
       setPointerDrag(null);
+      onMove(from, to);
       return;
     }
 
-    clearAnnotations();
-    setSelectedSquare(null);
-    setDragFrom(null);
-    setPointerDrag(null);
-    onMove(from, to);
+    if (premoveModeActive && playerColor) {
+      const rc = squareToRowCol(from);
+      const piece = rc ? premoveProjected.projected[rc.row]?.[rc.col] : null;
+      if (!piece || piece.color !== playerColor) return;
+      const targets = getPseudoLegalPremoveTargets(
+        premoveProjected.projected,
+        from,
+        playerColor,
+        chess
+      );
+      if (!targets.has(to)) return;
+
+      const isPromotion =
+        piece.type === 'p' &&
+        ((piece.color === 'w' && to[1] === '8') || (piece.color === 'b' && to[1] === '1'));
+
+      if (isPromotion) {
+        setPendingPromotion({ from, to, color: playerColor, isPremove: true });
+        setSelectedSquare(null);
+        setDragFrom(null);
+        setPointerDrag(null);
+        return;
+      }
+
+      clearAnnotations();
+      setSelectedSquare(null);
+      setDragFrom(null);
+      setPointerDrag(null);
+      if (premoves.length < 5) {
+        setPremoves([...premoves, { from, to }]);
+        soundFX.playPremove();
+      }
+    }
   }
 
-  function handleSquareClick(square: string, pieceColor?: PieceColor) {
+  function getEffectivePieceAt(square: string): BoardCellPiece {
+    const rc = squareToRowCol(square);
+    if (!rc) return null;
+    if (premoveModeActive) {
+      return premoveProjected.projected[rc.row]?.[rc.col] || null;
+    }
+    const p = board[rc.row]?.[rc.col];
+    return p ? { type: p.type, color: p.color } : null;
+  }
+
+  function handleSquareClick(square: string) {
     if (justHandledPointerUpRef.current) {
       justHandledPointerUpRef.current = false;
       return;
@@ -488,7 +804,7 @@ export function ChessBoard({
     }
     if (arrowMode) return;
 
-    if (!canInteract) {
+    if (!canInteract && !premoveModeActive) {
       clearAnnotations();
       setSelectedSquare(null);
       return;
@@ -504,29 +820,50 @@ export function ChessBoard({
       return;
     }
 
-    if (pieceColor && (!playerColor || pieceColor === playerColor) && pieceColor === chess.turn()) {
+    const effPiece = getEffectivePieceAt(square);
+    const canSelectPiece = canInteract
+      ? Boolean(effPiece && (!playerColor || effPiece.color === playerColor) && effPiece.color === chess.turn())
+      : Boolean(effPiece && playerColor && effPiece.color === playerColor);
+
+    if (canSelectPiece) {
       setSelectedSquare(square);
     } else {
       clearAnnotations();
       setSelectedSquare(null);
+      if (premoveModeActive) {
+        cancelAllPremoves();
+      }
     }
   }
 
   function getMovablePieceAt(square: string): { type: 'p' | 'n' | 'b' | 'r' | 'q' | 'k'; color: PieceColor } | null {
-    if (!canInteract || arrowMode) return null;
-    const col = FILES.indexOf(square[0]);
-    const row = 8 - parseInt(square[1], 10);
-    const p = board[row]?.[col];
-    if (p && (!playerColor || p.color === playerColor) && p.color === chess.turn()) {
-      return { type: p.type, color: p.color };
+    if (arrowMode) return null;
+    const rc = squareToRowCol(square);
+    if (!rc) return null;
+    if (canInteract) {
+      const p = board[rc.row]?.[rc.col];
+      if (p && (!playerColor || p.color === playerColor) && p.color === chess.turn()) {
+        return { type: p.type, color: p.color };
+      }
+      return null;
+    }
+    if (premoveModeActive && playerColor) {
+      const p = premoveProjected.projected[rc.row]?.[rc.col];
+      if (p && p.color === playerColor) {
+        return { type: p.type, color: p.color };
+      }
     }
     return null;
   }
 
   function markPointerUpHandled() {
     justHandledPointerUpRef.current = true;
-    setTimeout(() => {
+    if (markPointerUpTimeoutRef.current) {
+      clearTimeout(markPointerUpTimeoutRef.current);
+    }
+    markPointerUpTimeoutRef.current = setTimeout(() => {
       justHandledPointerUpRef.current = false;
+      markPointerUpTimeoutRef.current = null;
     }, 120);
   }
 
@@ -538,9 +875,15 @@ export function ChessBoard({
     const sq = getSquareFromClientPos(e.clientX, e.clientY);
     if (!sq) return;
 
-    // Right-click always draws arrows/highlights anywhere
+    // Right-click cancels active premoves first (Chess.com behavior), otherwise draws arrows/highlights
     if (e.button === 2) {
       e.preventDefault();
+      if (premoveModeActive && premoves.length > 0) {
+        cancelAllPremoves();
+        setSelectedSquare(null);
+        markPointerUpHandled();
+        return;
+      }
       setDrawingState({ from: sq, to: sq, color: pickArrowColor(e), button: 2 });
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
@@ -554,7 +897,7 @@ export function ChessBoard({
         return;
       }
 
-      if (canInteract && selectedSquare && legalTargets.has(sq)) {
+      if ((canInteract || premoveModeActive) && selectedSquare && legalTargets.has(sq)) {
         pendingTapMoveRef.current = { from: selectedSquare, to: sq, pointerId: e.pointerId };
         return;
       }
@@ -622,10 +965,23 @@ export function ChessBoard({
 
       if (pointerDrag.active) {
         if (dropSq && dropSq !== pointerDrag.from) {
-          const legal = chess.moves({ square: pointerDrag.from as Square, verbose: true });
-          if (legal.some((m) => m.to === dropSq)) {
-            attemptMove(pointerDrag.from, dropSq);
-            return;
+          if (canInteract) {
+            const legal = chess.moves({ square: pointerDrag.from as Square, verbose: true });
+            if (legal.some((m) => m.to === dropSq)) {
+              attemptMove(pointerDrag.from, dropSq);
+              return;
+            }
+          } else if (premoveModeActive && playerColor) {
+            const targets = getPseudoLegalPremoveTargets(
+              premoveProjected.projected,
+              pointerDrag.from,
+              playerColor,
+              chess
+            );
+            if (targets.has(dropSq)) {
+              attemptMove(pointerDrag.from, dropSq);
+              return;
+            }
           }
         }
         setDragFrom(null);
@@ -672,6 +1028,11 @@ export function ChessBoard({
       // Left-dragged from non-piece square to another square -> draw arrow!
       justDrewRef.current = true;
       toggleArrow(drawingState.from, endSq, drawingState.color);
+    } else if (drawingState.button === 0 && drawingState.from === endSq && premoveModeActive && premoves.length > 0) {
+      // Left-clicking an empty/opponent square cancels active premoves
+      justDrewRef.current = true;
+      cancelAllPremoves();
+      setSelectedSquare(null);
     }
 
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
@@ -719,6 +1080,7 @@ export function ChessBoard({
             const isDragHoverTarget = Boolean(
               pointerDrag?.active && pointerDrag.hoverSquare === square && isLegalTarget
             );
+            const isPremoveSquare = premoveProjected.premoveSquares.has(square);
             const userHighlight = highlights.find((h) => h.square === square);
 
             const showRankLabel = fIdx === 0;
@@ -747,7 +1109,7 @@ export function ChessBoard({
                 key={square}
                 type="button"
                 aria-label={`Casella ${square}${piece ? ` (${piece.type})` : ''}`}
-                onClick={() => handleSquareClick(square, piece?.color)}
+                onClick={() => handleSquareClick(square)}
                 style={{
                   backgroundColor: squareColor,
                   backgroundImage: squareTexture,
@@ -760,6 +1122,13 @@ export function ChessBoard({
                 {userHighlight && (
                   <span
                     className={`absolute inset-0 pointer-events-none ${HIGHLIGHT_RGBA[userHighlight.color]}`}
+                    aria-hidden="true"
+                  />
+                )}
+
+                {isPremoveSquare && (
+                  <span
+                    className="absolute inset-0 pointer-events-none bg-[#EB6150]/65"
                     aria-hidden="true"
                   />
                 )}
@@ -797,14 +1166,18 @@ export function ChessBoard({
 
                 {isLegalTarget && !isCaptureTarget && (
                   <span
-                    className="absolute z-20 w-[30%] h-[30%] rounded-full bg-black/18 pointer-events-none"
+                    className={`absolute z-20 w-[30%] h-[30%] rounded-full pointer-events-none ${
+                      premoveModeActive ? 'bg-[#EB6150]/60' : 'bg-black/18'
+                    }`}
                     aria-hidden="true"
                   />
                 )}
 
                 {isLegalTarget && isCaptureTarget && (
                   <span
-                    className="absolute z-20 inset-[6%] rounded-full border-[5px] border-black/20 pointer-events-none"
+                    className={`absolute z-20 inset-[6%] rounded-full border-[5px] pointer-events-none ${
+                      premoveModeActive ? 'border-[#EB6150]/70' : 'border-black/20'
+                    }`}
                     aria-hidden="true"
                   />
                 )}
@@ -818,11 +1191,13 @@ export function ChessBoard({
       <div className="absolute inset-0 pointer-events-none z-10">
         {trackedPieces.map((p) => {
           const { row, col } = squareToGridCoords(p.square, orientation);
+          const isVacatedByPremove =
+            premoveModeActive && premoveProjected.movedRealOriginals.has(p.square);
           const canDragPiece =
-            canInteract &&
             !arrowMode &&
-            (!playerColor || p.color === playerColor) &&
-            p.color === chess.turn();
+            (canInteract
+              ? (!playerColor || p.color === playerColor) && p.color === chess.turn()
+              : premoveModeActive && !isVacatedByPremove && p.color === playerColor);
           const isBeingDragged = Boolean(pointerDrag?.active && pointerDrag.from === p.square);
 
           return (
@@ -838,17 +1213,17 @@ export function ChessBoard({
                 ease: [0.22, 1, 0.36, 1],
               }}
               className={`absolute top-0 left-0 w-[12.5%] h-[12.5%] p-[1%] ${
-                isBeingDragged ? 'opacity-0' : ''
+                isBeingDragged ? 'opacity-0' : isVacatedByPremove ? 'opacity-35' : ''
               }`}
             >
               <div
-                onClick={() => handleSquareClick(p.square, p.color)}
+                onClick={() => handleSquareClick(p.square)}
                 className={`w-full h-full flex items-center justify-center ${
                   arrowMode ? 'pointer-events-none cursor-crosshair' : 'pointer-events-auto'
                 } ${
                   canDragPiece
                     ? 'cursor-grab active:cursor-grabbing'
-                    : canInteract && !arrowMode
+                    : (canInteract || premoveModeActive) && !arrowMode
                       ? 'cursor-pointer'
                       : 'cursor-default'
                 }`}
@@ -858,6 +1233,28 @@ export function ChessBoard({
             </motion.div>
           );
         })}
+
+        {/* Projected Premove Destination Ghost Pieces */}
+        {premoveModeActive &&
+          Array.from(premoveProjected.premovedDestPieces.entries()).map(([sq, gp]) => {
+            const { row, col } = squareToGridCoords(sq, orientation);
+            const isBeingDragged = Boolean(pointerDrag?.active && pointerDrag.from === sq);
+            return (
+              <div
+                key={`premove-ghost-${sq}`}
+                style={{
+                  transform: `translate(${col * 100}%, ${row * 100}%)`,
+                }}
+                className={`absolute top-0 left-0 w-[12.5%] h-[12.5%] p-[1%] z-[15] pointer-events-none ${
+                  isBeingDragged ? 'opacity-0' : 'opacity-90'
+                }`}
+              >
+                <div className="w-full h-full flex items-center justify-center pointer-events-none">
+                  <ChessPiece type={gp.type} color={gp.color} pieceSet={pieceSetOverride} />
+                </div>
+              </div>
+            );
+          })}
       </div>
 
       {/* Unified Floating Dragged Piece (Desktop Mouse + Mobile Touch) */}
@@ -919,7 +1316,27 @@ export function ChessBoard({
                   key={promo}
                   type="button"
                   onClick={() => {
-                    onMove(pendingPromotion.from, pendingPromotion.to, promo);
+                    if (pendingPromotion.isPremove && !canInteract) {
+                      if (premoveModeActive && premoves.length < 5) {
+                        setPremoves([
+                          ...premoves,
+                          {
+                            from: pendingPromotion.from,
+                            to: pendingPromotion.to,
+                            promotion: promo,
+                          },
+                        ]);
+                        soundFX.playPremove();
+                      }
+                    } else if (canInteract) {
+                      const legal = chess.moves({
+                        square: pendingPromotion.from as Square,
+                        verbose: true,
+                      });
+                      if (legal.some((m) => m.to === pendingPromotion.to && m.promotion === promo)) {
+                        onMove(pendingPromotion.from, pendingPromotion.to, promo);
+                      }
+                    }
                     setPendingPromotion(null);
                   }}
                   className="aspect-square rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] p-2 flex items-center justify-center transition-colors"

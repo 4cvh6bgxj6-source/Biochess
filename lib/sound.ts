@@ -1492,6 +1492,13 @@ class SoundManager {
     this.playBuffer(ctx, bank.moveOpponent, ctx.currentTime, 0.74, 0.99, 0.025);
   }
 
+  public playPremove() {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const bank = this.getActiveBank(ctx);
+    this.playBuffer(ctx, bank.moveSelf, ctx.currentTime, 0.36, 1.14, 0.018);
+  }
+
   public playCapture() {
     const ctx = this.ensureCtx();
     if (!ctx) return;

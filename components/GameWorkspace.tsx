@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Chess, type Square } from 'chess.js';
 import {
   ArrowLeft,
   ArrowUpRight,
@@ -18,6 +19,7 @@ import {
   Target,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
 import {
   isTrainingBot,
@@ -30,7 +32,7 @@ import {
 import { computePostGameReview } from '@/lib/chess-bot';
 import { soundFX } from '@/lib/sound';
 import type { UiDictionary } from '@/lib/i18n';
-import { ChessBoard, type BoardArrow, type BoardHighlight } from './ChessBoard';
+import { ChessBoard, type BoardArrow, type BoardHighlight, type PremoveItem } from './ChessBoard';
 import { PlayerBar } from './PlayerBar';
 import { MatchChat } from './MatchChat';
 import { MoveQualityBadge, QUALITY_META } from './MoveQualityBadge';
@@ -41,6 +43,7 @@ interface GameWorkspaceProps {
   dict: UiDictionary;
   whiteTimeMs: number;
   blackTimeMs: number;
+  isBoardSynced?: boolean;
   muted: boolean;
   onToggleMute: () => void;
   onMove: (from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n') => void;
@@ -94,6 +97,7 @@ export function GameWorkspace({
   dict,
   whiteTimeMs,
   blackTimeMs,
+  isBoardSynced = true,
   muted,
   onToggleMute,
   onMove,
@@ -116,6 +120,12 @@ export function GameWorkspace({
   const [arrowMode, setArrowMode] = useState(false);
   const [arrows, setArrows] = useState<BoardArrow[]>([]);
   const [highlights, setHighlights] = useState<BoardHighlight[]>([]);
+  const [premoves, setPremoves] = useState<PremoveItem[]>([]);
+  const executingPremoveKeyRef = useRef<string>('');
+  const onMoveRef = useRef(onMove);
+  useEffect(() => {
+    onMoveRef.current = onMove;
+  }, [onMove]);
 
   const orientation: PieceColor = flipped ? (myColor === 'w' ? 'b' : 'w') : myColor;
   const isActive = game.status === 'active';
@@ -233,7 +243,76 @@ export function GameWorkspace({
   const isDummyTraining = Boolean(game.isBotGame && game.botId === 'dummy');
   const canMoveNow =
     isActive && !isInspectingHistory && (isDummyTraining || game.turn === myColor);
+  const canPremoveNow =
+    isActive && !isInspectingHistory && !isDummyTraining && game.turn !== myColor;
   const incomingDrawOffer = isActive && game.drawOfferBy !== null && game.drawOfferBy !== myColor;
+
+  // Clear queued premoves if match ends, switches, or user opens move history
+  useEffect(() => {
+    if (premoves.length === 0) return;
+    if (!isActive || isInspectingHistory || isDummyTraining) {
+      const t = setTimeout(() => setPremoves([]), 0);
+      return () => clearTimeout(t);
+    }
+  }, [game.id, isActive, isInspectingHistory, isDummyTraining, premoves.length]);
+
+  // Execute queued premove as soon as it becomes player's turn and Firestore state is synced
+  useEffect(() => {
+    if (!isActive || isInspectingHistory || isDummyTraining) {
+      executingPremoveKeyRef.current = '';
+      return;
+    }
+    if (!isBoardSynced || game.turn !== myColor || premoves.length === 0) {
+      if (game.turn !== myColor || premoves.length === 0) {
+        executingPremoveKeyRef.current = '';
+      }
+      return;
+    }
+
+    const nextMove = premoves[0];
+    const execKey = `${game.id}:${game.moves.length}:${nextMove.from}:${nextMove.to}:${nextMove.promotion || ''}`;
+    if (executingPremoveKeyRef.current === execKey) return;
+
+    const timer = setTimeout(() => {
+      executingPremoveKeyRef.current = execKey;
+      const rest = premoves.slice(1);
+      try {
+        const chess = new Chess(game.fen);
+        const legal = chess.moves({ square: nextMove.from as Square, verbose: true });
+        const match = legal.find(
+          (m) =>
+            m.to === nextMove.to &&
+            (!m.promotion || m.promotion === (nextMove.promotion || 'q'))
+        );
+        if (!match) {
+          setPremoves([]);
+          return;
+        }
+        setPremoves(rest);
+        setViewMoveIndex(null);
+        onMoveRef.current(
+          nextMove.from,
+          nextMove.to,
+          match.promotion as 'q' | 'r' | 'b' | 'n' | undefined
+        );
+      } catch {
+        setPremoves([]);
+      }
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [
+    isActive,
+    isInspectingHistory,
+    isDummyTraining,
+    isBoardSynced,
+    game.id,
+    game.moves.length,
+    game.turn,
+    game.fen,
+    myColor,
+    premoves,
+  ]);
 
   const movePairs = useMemo(() => {
     const pairs: Array<{
@@ -347,7 +426,10 @@ export function GameWorkspace({
               activeMoveCount={activeMoveIndex + 1}
               orientation={orientation}
               canInteract={canMoveNow}
+              canPremove={canPremoveNow}
               playerColor={isDummyTraining ? null : myColor}
+              premoves={premoves}
+              onPremovesChange={setPremoves}
               lastMove={lastMoveHighlight}
               arrowMode={arrowMode}
               arrows={arrows}
@@ -576,6 +658,27 @@ export function GameWorkspace({
                     </span>
                   )}
               </div>
+            </div>
+          )}
+
+          {/* Active Premove Queue Banner */}
+          {canPremoveNow && premoves.length > 0 && (
+            <div className="px-3.5 py-2 bg-[#382321] border-b border-[#EB6150]/45 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0 text-xs">
+                <span className="inline-block w-2 h-2 rounded-full bg-[#EB6150] shrink-0" />
+                <span className="font-bold text-[#F8B4AC] shrink-0">{dict.premoveLabel}:</span>
+                <span className="font-mono-tabular text-white truncate">
+                  {premoves.map((pm) => `${pm.from}→${pm.to}`).join(' · ')}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPremoves([])}
+                className="px-2 py-0.5 rounded bg-[#21201D] hover:bg-[#302E2B] border border-[#EB6150]/40 text-[11px] font-semibold text-[#F8B4AC] inline-flex items-center gap-1 shrink-0"
+              >
+                <X className="w-3 h-3" />
+                <span>{dict.cancel}</span>
+              </button>
             </div>
           )}
 
