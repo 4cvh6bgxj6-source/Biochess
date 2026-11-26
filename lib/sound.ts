@@ -1421,17 +1421,21 @@ class SoundManager {
     baseRate = 1,
     jitter = 0.03
   ) {
-    const src = ctx.createBufferSource();
-    src.buffer = buffer;
-    const microShift = 1 + (Math.random() * 2 - 1) * jitter;
-    src.playbackRate.setValueAtTime(baseRate * microShift, startTime);
+    try {
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      const microShift = 1 + (Math.random() * 2 - 1) * jitter;
+      src.playbackRate.setValueAtTime(baseRate * microShift, startTime);
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(volume, startTime);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(volume, startTime);
 
-    src.connect(gain);
-    gain.connect(ctx.destination);
-    src.start(startTime);
+      src.connect(gain);
+      gain.connect(ctx.destination);
+      src.start(startTime);
+    } catch {
+      // ignore browser WebAudio state errors
+    }
   }
 
   private playWarmChime(
@@ -1442,32 +1446,36 @@ class SoundManager {
     durationSec: number,
     harmonicRatio = 2
   ) {
-    const osc1 = ctx.createOscillator();
-    const osc2 = ctx.createOscillator();
-    const gain = ctx.createGain();
+    try {
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
 
-    osc1.type = 'sine';
-    osc1.frequency.setValueAtTime(freq, startTime);
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(freq, startTime);
 
-    osc2.type = 'sine';
-    osc2.frequency.setValueAtTime(freq * harmonicRatio, startTime);
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(freq * harmonicRatio, startTime);
 
-    const subGain = ctx.createGain();
-    subGain.gain.setValueAtTime(0.2, startTime);
+      const subGain = ctx.createGain();
+      subGain.gain.setValueAtTime(0.2, startTime);
 
-    gain.gain.setValueAtTime(0.0001, startTime);
-    gain.gain.linearRampToValueAtTime(volume, startTime + 0.006);
-    gain.gain.exponentialRampToValueAtTime(0.0008, startTime + durationSec);
+      gain.gain.setValueAtTime(0.0001, startTime);
+      gain.gain.linearRampToValueAtTime(volume, startTime + 0.006);
+      gain.gain.exponentialRampToValueAtTime(0.0008, startTime + durationSec);
 
-    osc1.connect(gain);
-    osc2.connect(subGain);
-    subGain.connect(gain);
-    gain.connect(ctx.destination);
+      osc1.connect(gain);
+      osc2.connect(subGain);
+      subGain.connect(gain);
+      gain.connect(ctx.destination);
 
-    osc1.start(startTime);
-    osc2.start(startTime);
-    osc1.stop(startTime + durationSec + 0.02);
-    osc2.stop(startTime + durationSec + 0.02);
+      osc1.start(startTime);
+      osc2.start(startTime);
+      osc1.stop(startTime + durationSec + 0.02);
+      osc2.stop(startTime + durationSec + 0.02);
+    } catch {
+      // ignore browser WebAudio state errors
+    }
   }
 
   public playMove() {

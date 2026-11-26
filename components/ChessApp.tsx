@@ -135,6 +135,8 @@ export function ChessApp() {
     inCheck: boolean;
   } | null>(null);
   const timeoutClaimedIdRef = useRef<string | null>(null);
+  const timeoutClaimedGameIdsRef = useRef<Set<string>>(new Set());
+  const timeoutRetryAfterRef = useRef<Record<string, number>>({});
   const prevMovesCountRef = useRef<Record<string, number>>({});
   const prevGameStatusRef = useRef<Record<string, string>>({});
   const prevChatCountRef = useRef<Record<string, number>>({});
@@ -367,9 +369,10 @@ export function ChessApp() {
         for (const finGame of unappliedFinished) {
           if (!settlingGameIdsRef.current.has(finGame.id)) {
             settlingGameIdsRef.current.add(finGame.id);
-            void settleMyEloForGame(uid, finGame).catch((err: Error) =>
-              setRuntimeFatalError(err)
-            );
+            void settleMyEloForGame(uid, finGame).catch((err: Error) => {
+              settlingGameIdsRef.current.delete(finGame.id);
+              console.error('ELO settlement warning:', err);
+            });
           }
         }
       },
@@ -476,11 +479,21 @@ export function ChessApp() {
     prevChatCountRef.current[gId] = activeGame.chat.length;
   }, [activeGame, profileUsername]);
 
+  const activeDocMovesSynced = Boolean(
+    activeGame &&
+      activeGameDoc &&
+      activeGameDoc.id === activeGame.id &&
+      activeMovesState.gameId === activeGame.id &&
+      activeGameDoc.movesCount >= 1 &&
+      activeGame.moves.length === activeGameDoc.movesCount
+  );
+
   const isClockRunning = Boolean(
     activeGame &&
       activeGame.status === 'active' &&
       activeGame.timeControl !== 'unlimited' &&
-      activeGame.moves.length >= 1
+      activeDocMovesSynced &&
+      activeGame.lastMoveAt > 0
   );
 
   const whiteTimeMs =
@@ -504,13 +517,23 @@ export function ChessApp() {
   const clockGameId = activeGame?.id || '';
   const clockLastMoveAt = activeGame?.lastMoveAt ?? 0;
   const clockTurn = activeGame?.turn ?? 'w';
+  const clockMovesCount = activeGameDoc?.movesCount ?? 0;
   const clockBaseWhiteMs = activeGame?.whiteTimeMs ?? 0;
   const clockBaseBlackMs = activeGame?.blackTimeMs ?? 0;
   const authUid = authUser?.uid || '';
 
   // Live clock synchronization (drift-free using lastMoveAt) + timeout detection
   useEffect(() => {
-    if (!clockGameId || !isClockRunning) return;
+    if (!clockGameId || !isClockRunning || clockLastMoveAt <= 0) return;
+
+    console.info('[BioChess][Timer] Clock loop started', {
+      clockGameId,
+      clockTurn,
+      clockMovesCount,
+      clockBaseWhiteMs,
+      clockBaseBlackMs,
+      clockLastMoveAt,
+    });
 
     const tick = () => {
       const elapsed = Math.max(0, Date.now() - clockLastMoveAt);
@@ -518,19 +541,66 @@ export function ChessApp() {
       const nextB = clockTurn === 'b' ? Math.max(0, clockBaseBlackMs - elapsed) : clockBaseBlackMs;
       setLiveClock({ gameId: clockGameId, w: nextW, b: nextB });
 
+      const activeRemainingMs = clockTurn === 'w' ? nextW : nextB;
+      const claimKey = `${clockGameId}:${clockTurn}:${clockMovesCount}`;
       const currentGame = latestGameRef.current;
-      if (
-        authUid &&
-        currentGame &&
-        currentGame.id === clockGameId &&
-        (nextW <= 0 || nextB <= 0) &&
-        timeoutClaimedIdRef.current !== clockGameId
-      ) {
-        timeoutClaimedIdRef.current = clockGameId;
-        const timedOut: PieceColor = nextW <= 0 ? 'w' : 'b';
-        void claimTimeoutInFirestore(currentGame, timedOut, authUid).catch((err: Error) =>
-          setRuntimeFatalError(err)
-        );
+
+      if (activeRemainingMs <= 0) {
+        const retryAt = timeoutRetryAfterRef.current[claimKey] ?? 0;
+        const alreadyClaimedGame = timeoutClaimedGameIdsRef.current.has(clockGameId);
+        const alreadyClaimingKey = timeoutClaimedIdRef.current === claimKey;
+
+        if (alreadyClaimedGame || alreadyClaimingKey) {
+          return;
+        }
+        if (Date.now() < retryAt) {
+          return;
+        }
+
+        if (
+          authUid &&
+          currentGame &&
+          currentGame.id === clockGameId &&
+          currentGame.status === 'active' &&
+          currentGame.turn === clockTurn &&
+          currentGame.moves.length >= 1
+        ) {
+          timeoutClaimedIdRef.current = claimKey;
+          const timedOut: PieceColor = clockTurn;
+          console.info('[BioChess][Timer] Clock reached 0ms, claiming timeout', {
+            claimKey,
+            timedOut,
+            elapsed,
+            clockBaseWhiteMs,
+            clockBaseBlackMs,
+          });
+          void claimTimeoutInFirestore(currentGame, timedOut, authUid)
+            .then((outcome) => {
+              console.info('[BioChess][Timer] Timeout claim outcome', { claimKey, outcome });
+              if (outcome === 'claimed') {
+                timeoutClaimedGameIdsRef.current.add(clockGameId);
+              }
+            })
+            .catch((err: Error) => {
+              console.error('[BioChess][Timer] Timeout claim error (cooldown 3s, no crash):', {
+                claimKey,
+                err,
+              });
+              timeoutRetryAfterRef.current[claimKey] = Date.now() + 3000;
+              if (timeoutClaimedIdRef.current === claimKey) {
+                timeoutClaimedIdRef.current = null;
+              }
+            });
+        } else {
+          console.warn('[BioChess][Timer] Active clock <= 0 but game guard skipped claim', {
+            claimKey,
+            hasAuth: Boolean(authUid),
+            currentGameId: currentGame?.id,
+            currentStatus: currentGame?.status,
+            currentTurn: currentGame?.turn,
+            movesLen: currentGame?.moves.length,
+          });
+        }
       }
     };
 
@@ -544,6 +614,7 @@ export function ChessApp() {
     clockGameId,
     clockLastMoveAt,
     clockTurn,
+    clockMovesCount,
     clockBaseWhiteMs,
     clockBaseBlackMs,
     isClockRunning,
@@ -587,6 +658,21 @@ export function ChessApp() {
       ) {
         return;
       }
+      const botColor: PieceColor = latestGame.white.isBot ? 'w' : 'b';
+      const botRemainingMs = botColor === 'w' ? liveTimesRef.current.w : liveTimesRef.current.b;
+      if (
+        latestGame.timeControl !== 'unlimited' &&
+        latestGame.moves.length >= 1 &&
+        botRemainingMs <= 0
+      ) {
+        console.info('[BioChess][Bot] Skipping bot move because bot clock already expired', {
+          gameId: botGameId,
+          botColor,
+          botRemainingMs,
+        });
+        return;
+      }
+
       if (botTurnKeyRef.current === turnKey) return;
       botTurnKeyRef.current = turnKey;
 
@@ -614,7 +700,7 @@ export function ChessApp() {
           if (botTurnKeyRef.current === turnKey) {
             botTurnKeyRef.current = '';
           }
-          setRuntimeFatalError(err);
+          console.error('Bot move warning:', err);
         });
     }, 280);
 
@@ -794,7 +880,9 @@ export function ChessApp() {
       if (playedLocally) {
         lastLocallyPlayedMoveRef.current = null;
       }
-      setRuntimeFatalError(err as Error);
+      console.error('Move submission warning:', err);
+      setGameError('Impossibile completare la mossa: controlla connessione o orologio.');
+      setTimeout(() => setGameError(null), 3500);
     }
   }
 

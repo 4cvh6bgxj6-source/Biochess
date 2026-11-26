@@ -168,27 +168,31 @@ export function detectOpeningFromSans(sans: string[]): { eco: string; name: stri
 }
 
 function pvUciToSan(fen: string, pv: Array<{ from: string; to: string; promo?: string }>): string[] {
-  const chess = new Chess(fen);
-  const sans: string[] = [];
-  for (const step of pv) {
-    try {
-      const m = chess.move({
-        from: step.from,
-        to: step.to,
-        promotion: (step.promo as 'q' | 'r' | 'b' | 'n' | undefined) || 'q',
-      });
-      if (!m) break;
-      sans.push(m.san);
-    } catch {
-      break;
+  try {
+    const chess = new Chess(fen);
+    const sans: string[] = [];
+    for (const step of pv) {
+      try {
+        const m = chess.move({
+          from: step.from,
+          to: step.to,
+          promotion: (step.promo as 'q' | 'r' | 'b' | 'n' | undefined) || 'q',
+        });
+        if (!m) break;
+        sans.push(m.san);
+      } catch {
+        break;
+      }
     }
+    return sans;
+  } catch {
+    return [];
   }
-  return sans;
 }
 
 function moveToSan(fen: string, from: string, to: string, promo?: string): string {
-  const chess = new Chess(fen);
   try {
+    const chess = new Chess(fen);
     const m = chess.move({
       from,
       to,
@@ -202,18 +206,22 @@ function moveToSan(fen: string, from: string, to: string, promo?: string): strin
 
 function getGamePhase(fen: string, ply: number): 'opening' | 'middlegame' | 'endgame' {
   if (ply < 14) return 'opening';
-  const chess = new Chess(fen);
-  const board = chess.board();
-  let nonKingMaterial = 0;
-  for (let r = 0; r < 8; r++) {
-    for (let c = 0; c < 8; c++) {
-      const sq = board[r][c];
-      if (!sq || sq.type === 'k' || sq.type === 'p') continue;
-      nonKingMaterial += PIECE_VALUES[sq.type];
+  try {
+    const chess = new Chess(fen);
+    const board = chess.board();
+    let nonKingMaterial = 0;
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const sq = board[r][c];
+        if (!sq || sq.type === 'k' || sq.type === 'p') continue;
+        nonKingMaterial += PIECE_VALUES[sq.type];
+      }
     }
+    if (nonKingMaterial <= 2600) return 'endgame';
+    return 'middlegame';
+  } catch {
+    return 'middlegame';
   }
-  if (nonKingMaterial <= 2600) return 'endgame';
-  return 'middlegame';
 }
 
 function buildTacticalNote(params: {
@@ -411,21 +419,56 @@ export function parsePgnForAnalysis(
     resultLabel = '*';
   }
 
-  const replay = new Chess();
   const rawMoves: RawMoveEntry[] = [];
-  for (const m of history) {
-    const fenBefore = replay.fen();
-    const res = replay.move(m);
-    rawMoves.push({
-      san: res.san,
-      from: res.from,
-      to: res.to,
-      promotion: res.promotion as 'q' | 'r' | 'b' | 'n' | undefined,
-      captured: res.captured,
-      color: res.color,
-      fenBefore,
-      fenAfter: replay.fen(),
-    });
+  try {
+    const startFenHeader = headers.FEN || headers.Fen;
+    let fallbackReplay: Chess | null = null;
+    for (const m of history) {
+      let fenBefore = typeof m.before === 'string' && m.before ? m.before : '';
+      let fenAfter = typeof m.after === 'string' && m.after ? m.after : '';
+
+      if (!fenBefore || !fenAfter) {
+        if (!fallbackReplay) {
+          fallbackReplay = startFenHeader ? new Chess(startFenHeader) : new Chess();
+        }
+        fenBefore = fallbackReplay.fen();
+        const res = fallbackReplay.move({
+          from: m.from,
+          to: m.to,
+          promotion: m.promotion as 'q' | 'r' | 'b' | 'n' | undefined,
+        });
+        fenAfter = fallbackReplay.fen();
+        rawMoves.push({
+          san: res.san,
+          from: res.from,
+          to: res.to,
+          promotion: res.promotion as 'q' | 'r' | 'b' | 'n' | undefined,
+          captured: res.captured,
+          color: res.color,
+          fenBefore,
+          fenAfter,
+        });
+      } else {
+        rawMoves.push({
+          san: m.san,
+          from: m.from,
+          to: m.to,
+          promotion: m.promotion as 'q' | 'r' | 'b' | 'n' | undefined,
+          captured: m.captured,
+          color: m.color,
+          fenBefore,
+          fenAfter,
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('[BioChess][Coach] Failed extracting PGN moves cleanly:', err);
+    if (rawMoves.length === 0) {
+      return {
+        ok: false,
+        error: 'PGN non valido o incompleto: impossibile ricostruire le mosse della partita.',
+      };
+    }
   }
 
   // Deterministic short hash for PGN deduplication
@@ -527,9 +570,16 @@ export async function analyzeFullGameWithEngine(
   for (let i = 0; i < total; i++) {
     const raw = parsed.rawMoves[i];
     const beforeEval = getEval(raw.fenBefore);
-    const afterChess = new Chess(raw.fenAfter);
-    const isTerminalMate = afterChess.isCheckmate();
-    const isTerminalDraw = afterChess.isDraw();
+    let isTerminalMate = false;
+    let isTerminalDraw = false;
+    try {
+      const afterChess = new Chess(raw.fenAfter);
+      isTerminalMate = afterChess.isCheckmate();
+      isTerminalDraw = afterChess.isDraw();
+    } catch {
+      isTerminalMate = false;
+      isTerminalDraw = false;
+    }
 
     const afterEval = isTerminalMate
       ? {
@@ -729,16 +779,20 @@ export async function analyzeFullGameWithEngine(
       m.bestPvSan = pvUciToSan(m.fenBefore, deepBefore.pv);
     }
 
-    const afterCh = new Chess(m.fenAfter);
-    if (!afterCh.isGameOver()) {
-      const deepAfter = searchPositionWithPv(
-        m.fenAfter,
-        { maxDepth: 3, budgetMs: 18, quiescencePlies: 3 },
-        3
-      );
-      if (deepAfter && deepAfter.pv.length > 0) {
-        m.playedPvSan = pvUciToSan(m.fenAfter, deepAfter.pv);
+    try {
+      const afterCh = new Chess(m.fenAfter);
+      if (!afterCh.isGameOver()) {
+        const deepAfter = searchPositionWithPv(
+          m.fenAfter,
+          { maxDepth: 3, budgetMs: 18, quiescencePlies: 3 },
+          3
+        );
+        if (deepAfter && deepAfter.pv.length > 0) {
+          m.playedPvSan = pvUciToSan(m.fenAfter, deepAfter.pv);
+        }
       }
+    } catch {
+      // ignore invalid fenAfter
     }
 
     const moverSign = m.color === 'w' ? 1 : -1;
@@ -835,7 +889,12 @@ export function evaluateStudentMoveOnPosition(
   engineBestSan: string,
   engineBestEvalWhiteCp: number
 ): StudentAttemptEvaluation | null {
-  const chess = new Chess(fenBefore);
+  let chess: Chess;
+  try {
+    chess = new Chess(fenBefore);
+  } catch {
+    return null;
+  }
   const moverColor = chess.turn();
   const moverSign = moverColor === 'w' ? 1 : -1;
 

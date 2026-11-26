@@ -100,7 +100,7 @@ function tsToMs(val: unknown): number {
   if (val && typeof (val as Timestamp).toMillis === 'function') {
     return (val as Timestamp).toMillis();
   }
-  if (typeof val === 'number' && Number.isFinite(val)) {
+  if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
     return val;
   }
   return Date.now();
@@ -1064,13 +1064,19 @@ export async function submitMoveToFirestore(params: {
   );
 
   const tc = TIME_CONTROLS[game.timeControl];
+  const isClockedActiveTurn = game.timeControl !== 'unlimited' && game.moves.length >= 1;
+  const moverRemainingBeforeMove = movingColor === 'w' ? liveWhiteMs : liveBlackMs;
+  if (isClockedActiveTurn && moverRemainingBeforeMove <= 0) {
+    return { ok: false, error: 'Tempo scaduto.' };
+  }
+
   let nextWhiteMs = Math.max(0, Math.min(86400000, Math.round(liveWhiteMs)));
   let nextBlackMs = Math.max(0, Math.min(86400000, Math.round(liveBlackMs)));
-  if (game.timeControl !== 'unlimited' && game.moves.length >= 1) {
+  if (isClockedActiveTurn) {
     if (movingColor === 'w') {
-      nextWhiteMs = Math.min(86400000, nextWhiteMs + tc.incrementMs);
+      nextWhiteMs = Math.max(1, Math.min(86400000, nextWhiteMs + tc.incrementMs));
     } else {
-      nextBlackMs = Math.min(86400000, nextBlackMs + tc.incrementMs);
+      nextBlackMs = Math.max(1, Math.min(86400000, nextBlackMs + tc.incrementMs));
     }
   }
 
@@ -1176,6 +1182,25 @@ export async function submitMoveToFirestore(params: {
       quality: evalResult.quality,
     };
   } catch (error) {
+    // Handle concurrent game-end (e.g., timeout/resign committed simultaneously) without crashing
+    try {
+      const latestSnap = await getDoc(doc(db, 'games', game.id));
+      if (!latestSnap.exists()) {
+        return { ok: false, error: 'Partita non trovata.' };
+      }
+      const latestData = latestSnap.data();
+      if (latestData.status !== 'active') {
+        return { ok: false, error: 'Partita già conclusa.' };
+      }
+      if (
+        (typeof latestData.movesCount === 'number' && latestData.movesCount >= nextPly) ||
+        latestData.turn !== movingColor
+      ) {
+        return { ok: false, error: 'Mossa già aggiornata.' };
+      }
+    } catch {
+      // fall through to standard handler if server check itself fails
+    }
     handleFirestoreError(error, OperationType.WRITE, `games/${game.id}`);
   }
 }
@@ -1333,6 +1358,13 @@ export async function resignGameInFirestore(
   uid: string
 ): Promise<void> {
   if (game.status !== 'active') return;
+  try {
+    const latestSnap = await getDoc(doc(db, 'games', game.id));
+    if (!latestSnap.exists() || latestSnap.data().status !== 'active') return;
+  } catch {
+    // proceed and let server rule arbitrate
+  }
+
   const winner: PieceColor = myColor === 'w' ? 'b' : 'w';
   const endReason = `${myUsername} ha abbandonato la partita.`.slice(0, 200);
   const msgId = makeEntityId('msg');
@@ -1369,6 +1401,14 @@ export async function resignGameInFirestore(
     });
     await batch.commit();
   } catch (error) {
+    try {
+      const latestSnap = await getDoc(doc(db, 'games', game.id));
+      if (latestSnap.exists() && latestSnap.data().status !== 'active') {
+        return;
+      }
+    } catch {
+      // ignore
+    }
     handleFirestoreError(error, OperationType.WRITE, `games/${game.id}`);
   }
 }
@@ -1377,40 +1417,116 @@ export async function claimTimeoutInFirestore(
   game: GameState,
   timedOutColor: PieceColor,
   uid: string
-): Promise<void> {
-  if (game.status !== 'active' || game.timeControl === 'unlimited' || game.moves.length < 1) {
-    return;
+): Promise<'claimed' | 'already_resolved'> {
+  console.info('[BioChess][Timeout] claimTimeoutInFirestore invoked', {
+    gameId: game.id,
+    timedOutColor,
+    clientStatus: game.status,
+    clientTurn: game.turn,
+    clientMovesLen: game.moves.length,
+    timeControl: game.timeControl,
+    whiteTimeMs: game.whiteTimeMs,
+    blackTimeMs: game.blackTimeMs,
+    uid,
+  });
+
+  if (
+    game.status !== 'active' ||
+    game.timeControl === 'unlimited' ||
+    game.moves.length < 1 ||
+    game.turn !== timedOutColor
+  ) {
+    console.info('[BioChess][Timeout] Skipped by client precheck', {
+      gameId: game.id,
+      status: game.status,
+      timeControl: game.timeControl,
+      movesLen: game.moves.length,
+      turn: game.turn,
+      timedOutColor,
+    });
+    return 'already_resolved';
   }
+
+  let latest: GameDocSnapshot;
+  try {
+    const latestSnap = await getDoc(doc(db, 'games', game.id));
+    if (!latestSnap.exists()) {
+      console.warn('[BioChess][Timeout] Game doc does not exist on server', { gameId: game.id });
+      return 'already_resolved';
+    }
+    latest = mapGameDoc(latestSnap.id, latestSnap.data());
+  } catch (error) {
+    console.error('[BioChess][Timeout] Failed reading latest game doc', {
+      gameId: game.id,
+      error,
+    });
+    handleFirestoreError(error, OperationType.GET, `games/${game.id}`);
+  }
+
+  // Re-verify against authoritative server state so stale client timers or PvP double-claims never fail rules
+  if (
+    latest.status !== 'active' ||
+    latest.timeControl === 'unlimited' ||
+    latest.movesCount < 1 ||
+    latest.turn !== timedOutColor
+  ) {
+    console.info('[BioChess][Timeout] Skipped after server check (already updated/resolved)', {
+      gameId: latest.id,
+      serverStatus: latest.status,
+      serverTimeControl: latest.timeControl,
+      serverMovesCount: latest.movesCount,
+      serverTurn: latest.turn,
+      timedOutColor,
+    });
+    return 'already_resolved';
+  }
+
   const winner: PieceColor = timedOutColor === 'w' ? 'b' : 'w';
-  const loserName = timedOutColor === 'w' ? game.white.username : game.black.username;
-  const endReason = `Tempo scaduto per ${loserName}.`.slice(0, 200);
+  const loserName = timedOutColor === 'w' ? latest.whiteUsername : latest.blackUsername;
+  const safeWhiteName = (latest.whiteUsername.trim() || 'Bianco').slice(0, 32).padEnd(2, '_');
+  const safeBlackName = (latest.blackUsername.trim() || 'Nero').slice(0, 32).padEnd(2, '_');
+  const endReason = `Tempo scaduto per ${loserName || (timedOutColor === 'w' ? 'Bianco' : 'Nero')}.`.slice(0, 200);
   const msgId = makeEntityId('msg');
+  const clampClock = (ms: number) => Math.max(0, Math.min(86400000, Math.round(Number.isFinite(ms) ? ms : 0)));
+  const nextWhiteTimeMs = timedOutColor === 'w' ? 0 : clampClock(latest.whiteTimeMs);
+  const nextBlackTimeMs = timedOutColor === 'b' ? 0 : clampClock(latest.blackTimeMs);
+  const safeMovesCount = Math.max(1, Math.min(2000, Math.round(latest.movesCount)));
+
+  console.info('[BioChess][Timeout] Committing timeout batch to Firestore', {
+    gameId: latest.id,
+    winner,
+    timedOutColor,
+    nextWhiteTimeMs,
+    nextBlackTimeMs,
+    safeMovesCount,
+    timeControl: latest.timeControl,
+  });
 
   try {
     const batch = writeBatch(db);
-    batch.update(doc(db, 'games', game.id), {
+    batch.update(doc(db, 'games', latest.id), {
       status: 'timeout',
       winner,
       endReason,
-      whiteTimeMs: timedOutColor === 'w' ? 0 : Math.max(0, Math.round(game.whiteTimeMs)),
-      blackTimeMs: timedOutColor === 'b' ? 0 : Math.max(0, Math.round(game.blackTimeMs)),
+      whiteTimeMs: nextWhiteTimeMs,
+      blackTimeMs: nextBlackTimeMs,
       drawOfferBy: '',
       updatedAt: serverTimestamp(),
     });
-    batch.set(doc(db, 'recentMatches', game.id), {
-      id: game.id,
-      white: game.white.username.slice(0, 32),
-      black: game.black.username.slice(0, 32),
+    batch.set(doc(db, 'recentMatches', latest.id), {
+      id: latest.id,
+      white: safeWhiteName,
+      black: safeBlackName,
       winner,
       status: 'timeout',
       endReason,
-      movesCount: game.moves.length,
-      timeControl: game.timeControl,
-      isBotGame: game.isBotGame,
+      movesCount: safeMovesCount,
+      timeControl: latest.timeControl,
+      isBotGame: latest.isBotGame,
       authorUid: uid,
       createdAt: serverTimestamp(),
     });
-    batch.set(doc(db, 'games', game.id, 'messages', msgId), {
+    batch.set(doc(db, 'games', latest.id, 'messages', msgId), {
       id: msgId,
       sender: 'BioChess',
       authorUid: uid,
@@ -1419,8 +1535,37 @@ export async function claimTimeoutInFirestore(
       createdAt: serverTimestamp(),
     });
     await batch.commit();
+    console.info('[BioChess][Timeout] Timeout batch committed cleanly', {
+      gameId: latest.id,
+      winner,
+      timedOutColor,
+    });
+    return 'claimed';
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `games/${game.id}`);
+    console.warn('[BioChess][Timeout] Batch commit failed; inspecting authoritative game state', {
+      gameId: latest.id,
+      error,
+    });
+    // If another move or opponent's timeout claim committed concurrently, resolve gracefully
+    try {
+      const checkSnap = await getDoc(doc(db, 'games', latest.id));
+      if (!checkSnap.exists()) return 'already_resolved';
+      const checkDoc = mapGameDoc(checkSnap.id, checkSnap.data());
+      if (checkDoc.status !== 'active' || checkDoc.turn !== timedOutColor) {
+        console.info('[BioChess][Timeout] Concurrent state change resolved race cleanly', {
+          gameId: latest.id,
+          serverStatus: checkDoc.status,
+          serverTurn: checkDoc.turn,
+        });
+        return 'already_resolved';
+      }
+    } catch (checkErr) {
+      console.error('[BioChess][Timeout] Secondary state check failed', {
+        gameId: latest.id,
+        checkErr,
+      });
+    }
+    handleFirestoreError(error, OperationType.WRITE, `games/${latest.id}`);
   }
 }
 
@@ -1680,10 +1825,10 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
     }
 
     const u = userSnap.data();
-    const curElo = typeof u.elo === 'number' ? u.elo : 300;
-    const curWins = typeof u.wins === 'number' ? u.wins : 0;
-    const curLosses = typeof u.losses === 'number' ? u.losses : 0;
-    const curDraws = typeof u.draws === 'number' ? u.draws : 0;
+    const curElo = typeof u.elo === 'number' && Number.isFinite(u.elo) ? Math.max(0, Math.round(u.elo)) : 300;
+    const curWins = typeof u.wins === 'number' && Number.isFinite(u.wins) ? Math.max(0, Math.round(u.wins)) : 0;
+    const curLosses = typeof u.losses === 'number' && Number.isFinite(u.losses) ? Math.max(0, Math.round(u.losses)) : 0;
+    const curDraws = typeof u.draws === 'number' && Number.isFinite(u.draws) ? Math.max(0, Math.round(u.draws)) : 0;
 
     const myColor: PieceColor = isWhite ? 'w' : 'b';
     let nextElo = curElo;
@@ -1695,7 +1840,7 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
       nextDraws += 1;
     } else if (latestGame.winner === myColor) {
       nextWins += 1;
-      nextElo = curElo + 50;
+      nextElo = Math.min(10000, curElo + 50);
     } else {
       nextLosses += 1;
       nextElo = Math.max(0, curElo - 76);
@@ -1715,6 +1860,18 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
     });
     await batch.commit();
   } catch (error) {
+    // Ignore concurrent settlement from another tab/listener if already applied on server
+    try {
+      const checkSnap = await getDoc(doc(db, 'games', gameDoc.id));
+      if (checkSnap.exists()) {
+        const checked = mapGameDoc(checkSnap.id, checkSnap.data());
+        if ((isWhite && checked.whiteEloApplied) || (isBlack && checked.blackEloApplied)) {
+          return;
+        }
+      }
+    } catch {
+      // ignore check errors
+    }
     handleFirestoreError(error, OperationType.WRITE, `users/${uid}`);
   }
 }

@@ -161,7 +161,7 @@ export function GameWorkspace({
     if (!showMoveAnalysis) return counts;
     for (const m of game.moves) {
       if (m.color !== myColor) continue;
-      if (m.quality && m.quality !== 'neutral') {
+      if (m.quality && m.quality !== 'neutral' && m.quality in counts) {
         counts[m.quality] += 1;
       }
     }
@@ -262,7 +262,10 @@ export function GameWorkspace({
   }
 
   const inspectedMeta =
-    showMoveAnalysis && inspectedMove?.quality && inspectedMove.quality !== 'neutral'
+    showMoveAnalysis &&
+    inspectedMove?.quality &&
+    inspectedMove.quality !== 'neutral' &&
+    inspectedMove.quality in QUALITY_META
       ? QUALITY_META[inspectedMove.quality]
       : null;
 
@@ -339,7 +342,7 @@ export function GameWorkspace({
               <span>{dict.lobby}</span>
             </button>
             <span className="text-xs font-semibold text-[#9E9D9A]">
-              {TIME_CONTROLS[game.timeControl].label} · {game.moves.length} {dict.movesWord}
+              {TIME_CONTROLS[game.timeControl]?.label ?? game.timeControl} · {game.moves.length} {dict.movesWord}
             </span>
           </div>
 

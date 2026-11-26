@@ -325,19 +325,35 @@ export function CoachReviewStudio({
     if (initialGame && initialGame.moves.length > 0) {
       const key = `game:${initialGame.id}:${initialGame.moves.length}`;
       if (autoLaunchedKeyRef.current === key) return;
-      const parsed = gameStateToParsedInput(initialGame, myUsername);
-      const timer = setTimeout(() => {
-        if (autoLaunchedKeyRef.current === key) return;
-        autoLaunchedKeyRef.current = key;
-        void runAnalysisPipeline(parsed);
-      }, 0);
-      return () => clearTimeout(timer);
+      try {
+        const parsed = gameStateToParsedInput(initialGame, myUsername);
+        const timer = setTimeout(() => {
+          if (autoLaunchedKeyRef.current === key) return;
+          autoLaunchedKeyRef.current = key;
+          void runAnalysisPipeline(parsed);
+        }, 0);
+        return () => clearTimeout(timer);
+      } catch (err) {
+        console.error('[BioChess][Coach] Failed preparing game for analysis:', err);
+        setPgnError(err instanceof Error ? err.message : 'Errore durante la lettura della partita.');
+        setShowImportPanel(true);
+        return;
+      }
     }
 
     if (initialPgn && initialPgn.pgn.trim()) {
       const key = `pgn:${initialPgn.id || initialPgn.pgn.slice(0, 48)}:${initialPgn.playerColor}`;
       if (autoLaunchedKeyRef.current === key) return;
-      const res = parsePgnForAnalysis(initialPgn.pgn, initialPgn.playerColor, myUsername);
+      let res: ReturnType<typeof parsePgnForAnalysis>;
+      try {
+        res = parsePgnForAnalysis(initialPgn.pgn, initialPgn.playerColor, myUsername);
+      } catch (err) {
+        console.error('[BioChess][Coach] Failed parsing PGN in CoachReviewStudio:', err);
+        res = {
+          ok: false,
+          error: 'PGN non valido o illeggibile. Impossibile avviare la revisione.',
+        };
+      }
       const timer = setTimeout(() => {
         if (autoLaunchedKeyRef.current === key) return;
         autoLaunchedKeyRef.current = key;
@@ -429,13 +445,15 @@ export function CoachReviewStudio({
     }
 
     if (lastStudentAttempt && focusedMove) {
-      const ch = new Chess(focusedMove.fenBefore);
+      let attemptFen = focusedMove.fenBefore;
       try {
+        const ch = new Chess(focusedMove.fenBefore);
         ch.move({
           from: lastStudentAttempt.from,
           to: lastStudentAttempt.to,
           promotion: 'q',
         });
+        attemptFen = ch.fen();
       } catch {
         // fallback handled below
       }
@@ -461,7 +479,7 @@ export function CoachReviewStudio({
         });
       }
       return {
-        fen: ch.fen(),
+        fen: attemptFen,
         activeMoveCount: undefined,
         lastMove: {
           from: lastStudentAttempt.from,
@@ -588,7 +606,12 @@ export function CoachReviewStudio({
   }
 
   function startBestVariationPreview(move: AnalyzedMove) {
-    const ch = new Chess(move.fenBefore);
+    let ch: Chess;
+    try {
+      ch = new Chess(move.fenBefore);
+    } catch {
+      return;
+    }
     const fens: string[] = [move.fenBefore];
     const sans: string[] = [];
     const movesMeta: Array<{ from: string; to: string }> = [];
