@@ -39,6 +39,7 @@ import { MoveQualityBadge, QUALITY_META } from './MoveQualityBadge';
 
 interface GameWorkspaceProps {
   game: GameState;
+  myUid?: string;
   myUsername: string;
   dict: UiDictionary;
   whiteTimeMs: number;
@@ -52,6 +53,7 @@ interface GameWorkspaceProps {
   onOfferDraw: () => void;
   onRespondDraw: (accept: boolean) => void;
   onRematch: () => void;
+  rematchPending?: boolean;
   onBackToLobby: () => void;
   onOpenCoachStudio?: () => void;
 }
@@ -93,6 +95,7 @@ function computeCaptured(moves: GameState['moves']) {
 
 export function GameWorkspace({
   game,
+  myUid,
   myUsername,
   dict,
   whiteTimeMs,
@@ -106,13 +109,20 @@ export function GameWorkspace({
   onOfferDraw,
   onRespondDraw,
   onRematch,
+  rematchPending = false,
   onBackToLobby,
   onOpenCoachStudio,
 }: GameWorkspaceProps) {
-  const myColor: PieceColor =
-    !game.white.isBot && game.white.username.toLowerCase() === myUsername.toLowerCase()
-      ? 'w'
-      : 'b';
+  const myColor: PieceColor = (() => {
+    if (myUid) {
+      if (!game.white.isBot && game.white.uid === myUid) return 'w';
+      if (!game.black.isBot && game.black.uid === myUid) return 'b';
+    }
+    if (!game.white.isBot && game.white.username.toLowerCase() === myUsername.toLowerCase()) {
+      return 'w';
+    }
+    return 'b';
+  })();
 
   const [flipped, setFlipped] = useState(false);
   const [viewMoveIndex, setViewMoveIndex] = useState<number | null>(null);
@@ -421,6 +431,7 @@ export function GameWorkspace({
             />
 
             <ChessBoard
+              key={game.id}
               fen={displayFen}
               moves={game.moves}
               activeMoveCount={activeMoveIndex + 1}
@@ -555,10 +566,10 @@ export function GameWorkspace({
                 <button
                   type="button"
                   onClick={onRematch}
-                  disabled={game.rematchRequestedBy === myColor}
+                  disabled={rematchPending || game.rematchRequestedBy === myColor}
                   className="px-4 py-2 rounded bg-[#81B64C] hover:bg-[#95C85E] disabled:opacity-50 text-white text-xs font-bold border-b-2 border-[#5D8A32] inline-flex items-center gap-1.5 whitespace-nowrap"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
+                  <RefreshCw className={`w-3.5 h-3.5 ${rematchPending ? 'animate-spin' : ''}`} />
                   <span>
                     {game.rematchRequestedBy === myColor
                       ? dict.waitingRematch
@@ -679,6 +690,13 @@ export function GameWorkspace({
                 <X className="w-3 h-3" />
                 <span>{dict.cancel}</span>
               </button>
+            </div>
+          )}
+
+          {/* Dummy Free-Training Clarification */}
+          {isActive && isDummyTraining && (
+            <div className="px-3.5 py-1.5 bg-[#21201D] border-b border-[#3C3A36] text-[11px] text-[#9E9D9A]">
+              {dict.dummyTrainingHint}
             </div>
           )}
 

@@ -185,7 +185,10 @@ export function LobbyView({
               <div className="flex items-center gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded bg-[#262421] border border-[#3C3A36] flex items-center justify-center p-1.5 shrink-0">
                   {activeTab === 'bots' ? (
-                    <ChessPiece type={selectedBotDef.pieceType} color="b" />
+                    <ChessPiece
+                      type={selectedBotDef.pieceType}
+                      color={boardOrientation === 'w' ? 'b' : 'w'}
+                    />
                   ) : (
                     <User className="w-4 h-4 text-[#9E9D9A]" />
                   )}

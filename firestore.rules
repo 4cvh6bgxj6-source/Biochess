@@ -256,35 +256,44 @@ service cloud.firestore {
 
     function isValidEloSettlement(inc, ext) {
       return (
-        // Win: +50 ELO (standard) or +20 ELO (timeout), +1 win (capped at 10000)
+        // Win: +50 ELO (standard) or +20 ELO (timeout), +1 win (capped at 10000, min base 100)
         (
           inc.wins == ext.wins + 1 &&
           inc.losses == ext.losses &&
           inc.draws == ext.draws &&
           (
-            inc.elo == ext.elo + 50 ||
-            inc.elo == ext.elo + 20 ||
-            (ext.elo > 9950 && inc.elo == 10000)
+            (ext.elo >= 100 && (
+              inc.elo == ext.elo + 50 ||
+              inc.elo == ext.elo + 20 ||
+              (ext.elo > 9950 && inc.elo == 10000)
+            )) ||
+            (ext.elo < 100 && (inc.elo == 150 || inc.elo == 120))
           )
         ) ||
-        // Loss: -76 ELO (standard) or -5 ELO (timeout) (floor 0), +1 loss
+        // Loss: -76 ELO (standard) or -5 ELO (timeout) (floor 100), +1 loss
         (
           inc.losses == ext.losses + 1 &&
           inc.wins == ext.wins &&
           inc.draws == ext.draws &&
           (
-            inc.elo == ext.elo - 76 ||
-            (ext.elo < 76 && inc.elo == 0) ||
-            inc.elo == ext.elo - 5 ||
-            (ext.elo < 5 && inc.elo == 0)
+            (ext.elo >= 100 && (
+              inc.elo == ext.elo - 76 ||
+              (ext.elo < 176 && inc.elo == 100) ||
+              inc.elo == ext.elo - 5 ||
+              (ext.elo < 105 && inc.elo == 100)
+            )) ||
+            (ext.elo < 100 && inc.elo == 100)
           )
         ) ||
-        // Draw: +0 ELO, +1 draw
+        // Draw: +0 ELO (floor 100), +1 draw
         (
           inc.draws == ext.draws + 1 &&
           inc.wins == ext.wins &&
           inc.losses == ext.losses &&
-          inc.elo == ext.elo
+          (
+            (ext.elo >= 100 && inc.elo == ext.elo) ||
+            (ext.elo < 100 && inc.elo == 100)
+          )
         )
       );
     }
@@ -362,7 +371,13 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['online', 'activeGameId', 'updatedAt']) ||
           // Action: Update language and country flag
           incoming().diff(existing()).affectedKeys().hasOnly(['lang', 'country', 'updatedAt']) ||
-          // Action: Settle completed match ELO (+50/+20 win / -76/-5 loss / 0 draw)
+          // Action: Migrate legacy account (< 100 ELO) up to minimum 100 ELO floor
+          (
+            existing().elo < 100 &&
+            incoming().elo == 100 &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'updatedAt'])
+          ) ||
+          // Action: Settle completed match ELO (+50/+20 win / -76/-5 loss / 0 draw, min 100)
           (
             incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'wins', 'losses', 'draws', 'activeGameId', 'updatedAt']) &&
             isValidEloSettlement(incoming(), existing())
@@ -482,7 +497,7 @@ service cloud.firestore {
     match /games/{gameId} {
       allow get: if isVerified() &&
         isValidEntityId(gameId) &&
-        (existing().whiteUid == request.auth.uid || existing().blackUid == request.auth.uid);
+        (resource == null || existing().whiteUid == request.auth.uid || existing().blackUid == request.auth.uid);
 
       allow list: if isVerified() &&
         (request.auth.uid in resource.data.participantUids);

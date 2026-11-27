@@ -621,12 +621,63 @@ export function ChessBoard({
   useEffect(() => {
     pendingTapMoveRef.current = null;
     const t = setTimeout(() => {
-      setSelectedSquare(null);
-      setDragFrom(null);
-      setPointerDrag(null);
+      setSelectedSquare((prev) => {
+        if (!prev) return null;
+        const rc = squareToRowCol(prev);
+        if (!rc) return null;
+        if (canInteract) {
+          const p = board[rc.row]?.[rc.col];
+          if (p && (!playerColor || p.color === playerColor) && p.color === chess.turn()) {
+            return prev;
+          }
+          return null;
+        }
+        if (premoveModeActive && playerColor) {
+          const p = premoveProjected.projected[rc.row]?.[rc.col];
+          if (p && p.color === playerColor) {
+            return prev;
+          }
+        }
+        return null;
+      });
+      setPointerDrag((prev) => {
+        if (!prev) {
+          setDragFrom(null);
+          return null;
+        }
+        const rc = squareToRowCol(prev.from);
+        if (!rc) {
+          setDragFrom(null);
+          return null;
+        }
+        const stillOwnPiece = canInteract
+          ? (() => {
+              const p = board[rc.row]?.[rc.col];
+              return Boolean(
+                p &&
+                  p.type === prev.pieceType &&
+                  p.color === prev.pieceColor &&
+                  (!playerColor || p.color === playerColor) &&
+                  p.color === chess.turn()
+              );
+            })()
+          : premoveModeActive && playerColor
+            ? (() => {
+                const p = premoveProjected.projected[rc.row]?.[rc.col];
+                return Boolean(
+                  p && p.type === prev.pieceType && p.color === prev.pieceColor && p.color === playerColor
+                );
+              })()
+            : false;
+        if (!stillOwnPiece) {
+          setDragFrom(null);
+          return null;
+        }
+        return prev;
+      });
     }, 0);
     return () => clearTimeout(t);
-  }, [fen]);
+  }, [fen, board, chess, canInteract, premoveModeActive, playerColor, premoveProjected.projected]);
 
   useEffect(() => {
     if (premoves.length === 0) return;
@@ -870,6 +921,10 @@ export function ChessBoard({
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
     justDrewRef.current = false;
     justHandledPointerUpRef.current = false;
+    if (markPointerUpTimeoutRef.current) {
+      clearTimeout(markPointerUpTimeoutRef.current);
+      markPointerUpTimeoutRef.current = null;
+    }
     pendingTapMoveRef.current = null;
     soundFX.unlock();
     const sq = getSquareFromClientPos(e.clientX, e.clientY);

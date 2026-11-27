@@ -1,6 +1,6 @@
 'use client';
 
-import { Chess } from 'chess.js';
+import { Chess, type Square } from 'chess.js';
 import {
   collection,
   doc,
@@ -9,6 +9,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   Timestamp,
@@ -46,7 +47,16 @@ import { getLocalizedBotDrawReply } from './bot-dialogue';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+export const MIN_ELO = 100;
 const USERNAME_REGEX = /^[a-zA-Z0-9_]{2,20}$/;
+const migratingMinEloUids = new Set<string>();
+
+function clampElo(raw: unknown, fallback = 300): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    return Math.max(MIN_ELO, Math.min(10000, Math.round(fallback)));
+  }
+  return Math.max(MIN_ELO, Math.min(10000, Math.round(raw)));
+}
 const VALID_BOT_IDS = new Set<BotId>([
   'knight',
   'bishop',
@@ -188,7 +198,7 @@ function mapUserDocToSummary(data: Record<string, unknown>): PlayerSummary {
   return {
     uid: String(data.uid || ''),
     username: String(data.username || ''),
-    elo: typeof data.elo === 'number' ? data.elo : 300,
+    elo: clampElo(data.elo, 300),
     wins: typeof data.wins === 'number' ? data.wins : 0,
     losses: typeof data.losses === 'number' ? data.losses : 0,
     draws: typeof data.draws === 'number' ? data.draws : 0,
@@ -207,12 +217,12 @@ function mapGameDoc(id: string, data: Record<string, unknown>): GameDocSnapshot 
     id,
     whiteUid: String(data.whiteUid || ''),
     whiteUsername: String(data.whiteUsername || ''),
-    whiteElo: typeof data.whiteElo === 'number' ? data.whiteElo : 300,
+    whiteElo: clampElo(data.whiteElo, 300),
     whiteIsBot: Boolean(data.whiteIsBot),
     whiteCountry: sanitizeCountryCode(data.whiteCountry),
     blackUid: String(data.blackUid || ''),
     blackUsername: String(data.blackUsername || ''),
-    blackElo: typeof data.blackElo === 'number' ? data.blackElo : 300,
+    blackElo: clampElo(data.blackElo, 300),
     blackIsBot: Boolean(data.blackIsBot),
     blackCountry: sanitizeCountryCode(data.blackCountry),
     participantUids: Array.isArray(data.participantUids)
@@ -399,6 +409,29 @@ export async function setPresence(
   }
 }
 
+export async function ensureMinEloFloor(uid: string): Promise<void> {
+  if (!uid || migratingMinEloUids.has(uid)) return;
+  migratingMinEloUids.add(uid);
+  try {
+    await runTransaction(db, async (tx) => {
+      const userRef = doc(db, 'users', uid);
+      const snap = await tx.get(userRef);
+      if (!snap.exists()) return;
+      const data = snap.data();
+      if (typeof data.elo !== 'number' || !Number.isFinite(data.elo) || data.elo < MIN_ELO) {
+        tx.update(userRef, {
+          elo: MIN_ELO,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    });
+  } catch (err) {
+    console.warn('[BioChess][ELO] Minimum ELO migration deferred:', err);
+  } finally {
+    migratingMinEloUids.delete(uid);
+  }
+}
+
 export function subscribeMyProfile(
   uid: string,
   onProfile: (profile: PlayerSummary | null) => void,
@@ -412,7 +445,15 @@ export function subscribeMyProfile(
         onProfile(null);
         return;
       }
-      onProfile(mapUserDocToSummary(snap.data()));
+      const rawData = snap.data();
+      if (
+        typeof rawData.elo !== 'number' ||
+        !Number.isFinite(rawData.elo) ||
+        rawData.elo < MIN_ELO
+      ) {
+        void ensureMinEloFloor(uid);
+      }
+      onProfile(mapUserDocToSummary(rawData));
     },
     (error) => {
       try {
@@ -462,7 +503,11 @@ export function subscribeLeaderboard(
   return onSnapshot(
     q,
     (snap) => {
-      onLeaderboard(snap.docs.map((d) => mapUserDocToSummary(d.data())));
+      onLeaderboard(
+        snap.docs
+          .map((d) => mapUserDocToSummary(d.data()))
+          .sort((a, b) => b.elo - a.elo)
+      );
     },
     (error) => {
       try {
@@ -530,7 +575,7 @@ export function subscribeChallenges(
     id,
     fromUid: String(data.fromUid || ''),
     from: String(data.fromUsername || ''),
-    fromElo: typeof data.fromElo === 'number' ? data.fromElo : 300,
+    fromElo: clampElo(data.fromElo, 300),
     fromCountry: sanitizeCountryCode(data.fromCountry),
     toUid: String(data.toUid || ''),
     to: String(data.toUsername || ''),
@@ -774,7 +819,7 @@ export async function sendChallengeToUser(
       id: challengeId,
       fromUid: myUid,
       fromUsername: me.username.slice(0, 20),
-      fromElo: Math.max(0, Math.round(me.elo)),
+      fromElo: clampElo(me.elo, 300),
       toUid: targetUid,
       toUsername: targetUsername,
       timeControl,
@@ -854,12 +899,12 @@ export async function respondToChallenge(
     const td = toSnap.data();
     fromProfile = {
       username: String(fd.username || chData.fromUsername || ''),
-      elo: typeof fd.elo === 'number' ? fd.elo : 300,
+      elo: clampElo(fd.elo, 300),
       country: sanitizeCountryCode(fd.country) || sanitizeCountryCode(chData.fromCountry),
     };
     toProfile = {
       username: String(td.username || chData.toUsername || ''),
-      elo: typeof td.elo === 'number' ? td.elo : 300,
+      elo: clampElo(td.elo, 300),
       country: sanitizeCountryCode(td.country) || sanitizeCountryCode(chData.toCountry),
     };
   } catch (error) {
@@ -889,11 +934,11 @@ export async function respondToChallenge(
       id: gameId,
       whiteUid,
       whiteUsername,
-      whiteElo: Math.max(0, Math.round(whiteElo)),
+      whiteElo: clampElo(whiteElo, 300),
       whiteIsBot: false,
       blackUid,
       blackUsername,
-      blackElo: Math.max(0, Math.round(blackElo)),
+      blackElo: clampElo(blackElo, 300),
       blackIsBot: false,
       participantUids: [whiteUid, blackUid],
       fen: START_FEN,
@@ -974,11 +1019,11 @@ export async function createBotGameInFirestore(
       id: gameId,
       whiteUid: playerPlaysWhite ? myUid : 'bot',
       whiteUsername: (playerPlaysWhite ? me.username : bot.name).slice(0, 32),
-      whiteElo: playerPlaysWhite ? Math.max(0, Math.round(me.elo)) : bot.elo,
+      whiteElo: playerPlaysWhite ? clampElo(me.elo, 300) : clampElo(bot.elo, 300),
       whiteIsBot: !playerPlaysWhite,
       blackUid: playerPlaysWhite ? 'bot' : myUid,
       blackUsername: (playerPlaysWhite ? bot.name : me.username).slice(0, 32),
-      blackElo: playerPlaysWhite ? bot.elo : Math.max(0, Math.round(me.elo)),
+      blackElo: playerPlaysWhite ? clampElo(bot.elo, 300) : clampElo(me.elo, 300),
       blackIsBot: playerPlaysWhite,
       participantUids: [myUid],
       fen: START_FEN,
@@ -1026,6 +1071,53 @@ export async function createBotGameInFirestore(
   }
 }
 
+export function buildChessWithHistory(game: {
+  fen: string;
+  pgn?: string;
+  moves?: Array<{ from: string; to: string; promotion?: string }>;
+}): Chess {
+  if (game.moves && game.moves.length > 0) {
+    try {
+      const replayed = new Chess();
+      let ok = true;
+      for (const m of game.moves) {
+        const res = replayed.move({
+          from: m.from,
+          to: m.to,
+          ...(m.promotion ? { promotion: m.promotion } : {}),
+        });
+        if (!res) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok && replayed.fen() === game.fen) {
+        return replayed;
+      }
+    } catch {
+      // fall through to PGN / FEN fallback
+    }
+  }
+
+  if (game.pgn && game.pgn.trim().length > 0) {
+    try {
+      const fromPgn = new Chess();
+      fromPgn.loadPgn(game.pgn);
+      if (fromPgn.fen() === game.fen) {
+        return fromPgn;
+      }
+    } catch {
+      // fall through to bare FEN fallback
+    }
+  }
+
+  try {
+    return new Chess(game.fen);
+  } catch {
+    return new Chess();
+  }
+}
+
 export async function submitMoveToFirestore(params: {
   game: GameState;
   uid: string;
@@ -1042,13 +1134,22 @@ export async function submitMoveToFirestore(params: {
     return { ok: false, error: 'Partita già conclusa.' };
   }
 
-  const chess = new Chess(game.fen);
+  const chess = buildChessWithHistory(game);
   const movingColor = chess.turn();
   const prevMove = game.moves.length > 0 ? game.moves[game.moves.length - 1] : undefined;
 
   let moveRes;
   try {
-    moveRes = chess.move({ from, to, promotion: promotion || 'q' });
+    const fromPiece = chess.get(from as Square);
+    const isPawnPromotion =
+      fromPiece?.type === 'p' &&
+      ((fromPiece.color === 'w' && to[1] === '8') ||
+        (fromPiece.color === 'b' && to[1] === '1'));
+    moveRes = chess.move({
+      from,
+      to,
+      ...(promotion ? { promotion } : isPawnPromotion ? { promotion: 'q' } : {}),
+    });
   } catch {
     return { ok: false, error: 'Mossa non valida.' };
   }
@@ -1065,13 +1166,15 @@ export async function submitMoveToFirestore(params: {
     game.fen,
     from,
     to,
-    promotion,
+    moveRes.promotion as 'q' | 'r' | 'b' | 'n' | undefined,
     prevMove ? { to: prevMove.to, captured: prevMove.captured } : undefined,
     baseMovesCount
   );
 
   const tc = TIME_CONTROLS[game.timeControl];
-  const isClockedActiveTurn = game.timeControl !== 'unlimited' && baseMovesCount >= 1;
+  const isDummyTraining = Boolean(game.isBotGame && game.botId === 'dummy');
+  const isClockedActiveTurn =
+    !isDummyTraining && game.timeControl !== 'unlimited' && baseMovesCount >= 1;
   const moverRemainingBeforeMove = movingColor === 'w' ? liveWhiteMs : liveBlackMs;
   if (isClockedActiveTurn && moverRemainingBeforeMove <= 0) {
     return { ok: false, error: 'Tempo scaduto.' };
@@ -1435,147 +1538,104 @@ export async function claimTimeoutInFirestore(
     clientTurn: game.turn,
     clientMovesLen: game.moves.length,
     timeControl: game.timeControl,
-    whiteTimeMs: game.whiteTimeMs,
-    blackTimeMs: game.blackTimeMs,
     uid,
   });
 
   if (
     game.status !== 'active' ||
+    (game.isBotGame && game.botId === 'dummy') ||
     game.timeControl === 'unlimited' ||
     game.moves.length < 1 ||
     game.turn !== timedOutColor
   ) {
-    console.info('[BioChess][Timeout] Skipped by client precheck', {
-      gameId: game.id,
-      status: game.status,
-      timeControl: game.timeControl,
-      movesLen: game.moves.length,
-      turn: game.turn,
-      timedOutColor,
-    });
     return 'already_resolved';
   }
 
-  let latest: GameDocSnapshot;
-  try {
-    const latestSnap = await getDoc(doc(db, 'games', game.id));
-    if (!latestSnap.exists()) {
-      console.warn('[BioChess][Timeout] Game doc does not exist on server', { gameId: game.id });
-      return 'already_resolved';
-    }
-    latest = mapGameDoc(latestSnap.id, latestSnap.data());
-  } catch (error) {
-    console.error('[BioChess][Timeout] Failed reading latest game doc', {
-      gameId: game.id,
-      error,
-    });
-    handleFirestoreError(error, OperationType.GET, `games/${game.id}`);
-  }
-
-  // Re-verify against authoritative server state so stale client timers or PvP double-claims never fail rules
-  if (
-    latest.status !== 'active' ||
-    latest.timeControl === 'unlimited' ||
-    latest.movesCount < 1 ||
-    latest.turn !== timedOutColor
-  ) {
-    console.info('[BioChess][Timeout] Skipped after server check (already updated/resolved)', {
-      gameId: latest.id,
-      serverStatus: latest.status,
-      serverTimeControl: latest.timeControl,
-      serverMovesCount: latest.movesCount,
-      serverTurn: latest.turn,
-      timedOutColor,
-    });
-    return 'already_resolved';
-  }
-
-  const winner: PieceColor = timedOutColor === 'w' ? 'b' : 'w';
-  const loserName = timedOutColor === 'w' ? latest.whiteUsername : latest.blackUsername;
-  const safeWhiteName = (latest.whiteUsername.trim() || 'Bianco').slice(0, 32).padEnd(2, '_');
-  const safeBlackName = (latest.blackUsername.trim() || 'Nero').slice(0, 32).padEnd(2, '_');
-  const endReason = `Tempo scaduto per ${loserName || (timedOutColor === 'w' ? 'Bianco' : 'Nero')}.`.slice(0, 200);
+  const gameRef = doc(db, 'games', game.id);
+  const recentRef = doc(db, 'recentMatches', game.id);
   const msgId = makeEntityId('msg');
-  const clampClock = (ms: number) => Math.max(0, Math.min(86400000, Math.round(Number.isFinite(ms) ? ms : 0)));
-  const nextWhiteTimeMs = timedOutColor === 'w' ? 0 : clampClock(latest.whiteTimeMs);
-  const nextBlackTimeMs = timedOutColor === 'b' ? 0 : clampClock(latest.blackTimeMs);
-  const safeMovesCount = Math.max(1, Math.min(2000, Math.round(latest.movesCount)));
-
-  console.info('[BioChess][Timeout] Committing timeout batch to Firestore', {
-    gameId: latest.id,
-    winner,
-    timedOutColor,
-    nextWhiteTimeMs,
-    nextBlackTimeMs,
-    safeMovesCount,
-    timeControl: latest.timeControl,
-  });
+  const msgRef = doc(db, 'games', game.id, 'messages', msgId);
 
   try {
-    const batch = writeBatch(db);
-    batch.update(doc(db, 'games', latest.id), {
-      status: 'timeout',
-      winner,
-      endReason,
-      whiteTimeMs: nextWhiteTimeMs,
-      blackTimeMs: nextBlackTimeMs,
-      drawOfferBy: '',
-      updatedAt: serverTimestamp(),
+    const outcome = await runTransaction(db, async (tx) => {
+      const latestSnap = await tx.get(gameRef);
+      if (!latestSnap.exists()) {
+        return 'already_resolved' as const;
+      }
+      const latest = mapGameDoc(latestSnap.id, latestSnap.data());
+
+      if (
+        latest.status !== 'active' ||
+        (latest.isBotGame && latest.botId === 'dummy') ||
+        latest.timeControl === 'unlimited' ||
+        latest.movesCount < 1 ||
+        latest.turn !== timedOutColor
+      ) {
+        return 'already_resolved' as const;
+      }
+
+      const winner: PieceColor = timedOutColor === 'w' ? 'b' : 'w';
+      const loserName = timedOutColor === 'w' ? latest.whiteUsername : latest.blackUsername;
+      const safeWhiteName = (latest.whiteUsername.trim() || 'Bianco').slice(0, 32).padEnd(2, '_');
+      const safeBlackName = (latest.blackUsername.trim() || 'Nero').slice(0, 32).padEnd(2, '_');
+      const endReason = `Tempo scaduto per ${loserName || (timedOutColor === 'w' ? 'Bianco' : 'Nero')}.`.slice(0, 200);
+      const clampClock = (ms: number) =>
+        Math.max(0, Math.min(86400000, Math.round(Number.isFinite(ms) ? ms : 0)));
+      const nextWhiteTimeMs = timedOutColor === 'w' ? 0 : clampClock(latest.whiteTimeMs);
+      const nextBlackTimeMs = timedOutColor === 'b' ? 0 : clampClock(latest.blackTimeMs);
+      const safeMovesCount = Math.max(1, Math.min(2000, Math.round(latest.movesCount)));
+
+      tx.update(gameRef, {
+        status: 'timeout',
+        winner,
+        endReason,
+        whiteTimeMs: nextWhiteTimeMs,
+        blackTimeMs: nextBlackTimeMs,
+        drawOfferBy: '',
+        updatedAt: serverTimestamp(),
+      });
+      tx.set(recentRef, {
+        id: latest.id,
+        white: safeWhiteName,
+        black: safeBlackName,
+        winner,
+        status: 'timeout',
+        endReason,
+        movesCount: safeMovesCount,
+        timeControl: latest.timeControl,
+        isBotGame: latest.isBotGame,
+        authorUid: uid,
+        createdAt: serverTimestamp(),
+      });
+      tx.set(msgRef, {
+        id: msgId,
+        sender: 'BioChess',
+        authorUid: uid,
+        text: endReason,
+        kind: 'system',
+        createdAt: serverTimestamp(),
+      });
+      return 'claimed' as const;
     });
-    batch.set(doc(db, 'recentMatches', latest.id), {
-      id: latest.id,
-      white: safeWhiteName,
-      black: safeBlackName,
-      winner,
-      status: 'timeout',
-      endReason,
-      movesCount: safeMovesCount,
-      timeControl: latest.timeControl,
-      isBotGame: latest.isBotGame,
-      authorUid: uid,
-      createdAt: serverTimestamp(),
-    });
-    batch.set(doc(db, 'games', latest.id, 'messages', msgId), {
-      id: msgId,
-      sender: 'BioChess',
-      authorUid: uid,
-      text: endReason,
-      kind: 'system',
-      createdAt: serverTimestamp(),
-    });
-    await batch.commit();
-    console.info('[BioChess][Timeout] Timeout batch committed cleanly', {
-      gameId: latest.id,
-      winner,
-      timedOutColor,
-    });
-    return 'claimed';
+
+    console.info('[BioChess][Timeout] Transaction outcome', { gameId: game.id, outcome });
+    return outcome;
   } catch (error) {
-    console.warn('[BioChess][Timeout] Batch commit failed; inspecting authoritative game state', {
-      gameId: latest.id,
+    console.warn('[BioChess][Timeout] Transaction failed; inspecting authoritative game state', {
+      gameId: game.id,
       error,
     });
-    // If another move or opponent's timeout claim committed concurrently, resolve gracefully
     try {
-      const checkSnap = await getDoc(doc(db, 'games', latest.id));
+      const checkSnap = await getDoc(gameRef);
       if (!checkSnap.exists()) return 'already_resolved';
       const checkDoc = mapGameDoc(checkSnap.id, checkSnap.data());
       if (checkDoc.status !== 'active' || checkDoc.turn !== timedOutColor) {
-        console.info('[BioChess][Timeout] Concurrent state change resolved race cleanly', {
-          gameId: latest.id,
-          serverStatus: checkDoc.status,
-          serverTurn: checkDoc.turn,
-        });
         return 'already_resolved';
       }
-    } catch (checkErr) {
-      console.error('[BioChess][Timeout] Secondary state check failed', {
-        gameId: latest.id,
-        checkErr,
-      });
+    } catch {
+      // ignore secondary check errors
     }
-    handleFirestoreError(error, OperationType.WRITE, `games/${latest.id}`);
+    handleFirestoreError(error, OperationType.WRITE, `games/${game.id}`);
   }
 }
 
@@ -1697,51 +1757,82 @@ export async function requestOrAcceptRematchInFirestore(
   uid: string,
   lang?: string
 ): Promise<string | null> {
+  if (game.rematchGameId) return game.rematchGameId;
   if (game.status === 'active') return null;
 
-  // Bot game or PvP opponent already requested -> create new game with swapped colors
-  const shouldCreateNow =
-    game.isBotGame || (game.rematchRequestedBy !== null && game.rematchRequestedBy !== myColor);
+  const gameRef = doc(db, 'games', game.id);
+  const userRef = doc(db, 'users', uid);
 
-  if (!shouldCreateNow) {
-    if (game.rematchRequestedBy === myColor) return null;
-    try {
-      await updateDoc(doc(db, 'games', game.id), {
-        rematchRequestedBy: myColor,
-        updatedAt: serverTimestamp(),
-      });
-      return null;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `games/${game.id}`);
-    }
-  }
+  const buildRematchWriteData = (
+    latestGame: GameDocSnapshot,
+    userData: Record<string, unknown> | null,
+    newGameId: string,
+    newMsgId: string
+  ) => {
+    const nextWhiteUid = latestGame.blackIsBot ? 'bot' : latestGame.blackUid;
+    const nextBlackUid = latestGame.whiteIsBot ? 'bot' : latestGame.whiteUid;
+    const nextWhiteIsBot = latestGame.blackIsBot;
+    const nextBlackIsBot = latestGame.whiteIsBot;
 
-  const newGameId = makeEntityId('game');
-  const tc = TIME_CONTROLS[game.timeControl];
-  const msgId = makeEntityId('msg');
+    const myLatestElo = userData ? clampElo(userData.elo, 300) : undefined;
+    const myLatestUsername = userData ? String(userData.username || '').trim() : '';
+    const myLatestCountry = userData ? sanitizeCountryCode(userData.country) : undefined;
 
-  // Swap colors from previous game
-  const nextWhite = game.black;
-  const nextBlack = game.white;
-  const participantUids = [nextWhite.uid, nextBlack.uid].filter(
-    (u): u is string => Boolean(u && u !== 'bot')
-  );
+    const rawNextWhiteName =
+      (!nextWhiteIsBot && nextWhiteUid === uid && myLatestUsername) ||
+      latestGame.blackUsername ||
+      'Bianco';
+    const rawNextBlackName =
+      (!nextBlackIsBot && nextBlackUid === uid && myLatestUsername) ||
+      latestGame.whiteUsername ||
+      'Nero';
 
-  const nextWhiteCountry = sanitizeCountryCode(nextWhite.country);
-  const nextBlackCountry = sanitizeCountryCode(nextBlack.country);
+    const nextWhiteUsername = rawNextWhiteName.trim().slice(0, 32).padEnd(2, '_');
+    const nextBlackUsername = rawNextBlackName.trim().slice(0, 32).padEnd(2, '_');
 
-  try {
-    const batch = writeBatch(db);
+    const nextWhiteElo =
+      !nextWhiteIsBot && nextWhiteUid === uid && myLatestElo !== undefined
+        ? myLatestElo
+        : clampElo(latestGame.blackElo, 300);
+    const nextBlackElo =
+      !nextBlackIsBot && nextBlackUid === uid && myLatestElo !== undefined
+        ? myLatestElo
+        : clampElo(latestGame.whiteElo, 300);
+
+    const nextWhiteCountry =
+      (!nextWhiteIsBot && nextWhiteUid === uid ? myLatestCountry : undefined) ||
+      sanitizeCountryCode(latestGame.blackCountry);
+    const nextBlackCountry =
+      (!nextBlackIsBot && nextBlackUid === uid ? myLatestCountry : undefined) ||
+      sanitizeCountryCode(latestGame.whiteCountry);
+
+    const participantUids = Array.from(
+      new Set(
+        [nextWhiteUid, nextBlackUid].filter((u): u is string => Boolean(u && u !== 'bot'))
+      )
+    );
+
+    const safeTimeControl: TimeControlId = TIME_CONTROLS[latestGame.timeControl]
+      ? latestGame.timeControl
+      : 'blitz_5_0';
+    const tc = TIME_CONTROLS[safeTimeControl];
+
+    const resolvedBotId: BotId | '' = latestGame.isBotGame
+      ? latestGame.botId && VALID_BOT_IDS.has(latestGame.botId)
+        ? latestGame.botId
+        : 'knight'
+      : '';
+
     const rematchPayload: Record<string, unknown> = {
       id: newGameId,
-      whiteUid: nextWhite.isBot ? 'bot' : String(nextWhite.uid || ''),
-      whiteUsername: nextWhite.username.slice(0, 32),
-      whiteElo: Math.max(0, Math.round(nextWhite.elo)),
-      whiteIsBot: nextWhite.isBot,
-      blackUid: nextBlack.isBot ? 'bot' : String(nextBlack.uid || ''),
-      blackUsername: nextBlack.username.slice(0, 32),
-      blackElo: Math.max(0, Math.round(nextBlack.elo)),
-      blackIsBot: nextBlack.isBot,
+      whiteUid: nextWhiteUid,
+      whiteUsername: nextWhiteUsername,
+      whiteElo: nextWhiteElo,
+      whiteIsBot: nextWhiteIsBot,
+      blackUid: nextBlackUid,
+      blackUsername: nextBlackUsername,
+      blackElo: nextBlackElo,
+      blackIsBot: nextBlackIsBot,
       participantUids,
       fen: START_FEN,
       pgn: '',
@@ -1750,7 +1841,7 @@ export async function requestOrAcceptRematchInFirestore(
       status: 'active',
       winner: '',
       endReason: '',
-      timeControl: game.timeControl,
+      timeControl: safeTimeControl,
       whiteTimeMs: tc.initialMs,
       blackTimeMs: tc.initialMs,
       drawOfferBy: '',
@@ -1758,8 +1849,8 @@ export async function requestOrAcceptRematchInFirestore(
       rematchGameId: '',
       whiteEloApplied: false,
       blackEloApplied: false,
-      isBotGame: game.isBotGame,
-      botId: game.botId || '',
+      isBotGame: latestGame.isBotGame,
+      botId: resolvedBotId,
       lastMoveAt: serverTimestamp(),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -1767,36 +1858,177 @@ export async function requestOrAcceptRematchInFirestore(
     if (nextWhiteCountry) rematchPayload.whiteCountry = nextWhiteCountry;
     if (nextBlackCountry) rematchPayload.blackCountry = nextBlackCountry;
 
-    batch.set(doc(db, 'games', newGameId), rematchPayload);
-    batch.set(doc(db, 'games', newGameId, 'messages', msgId), {
-      id: msgId,
-      sender: game.isBotGame && game.botId ? BOT_DEFINITIONS[game.botId].name : 'BioChess',
+    const botDef =
+      latestGame.isBotGame && resolvedBotId ? BOT_DEFINITIONS[resolvedBotId] : undefined;
+    const humanName = nextWhiteIsBot ? nextBlackUsername : nextWhiteUsername;
+    const greetingText = botDef
+      ? getBotGreeting(botDef.id, humanName, lang).trim().slice(0, 400) || 'Buona partita!'
+      : 'Rivincita iniziata!';
+
+    const msgPayload = {
+      id: newMsgId,
+      sender: botDef ? botDef.name.slice(0, 32) : 'BioChess',
       authorUid: uid,
-      text:
-        game.isBotGame && game.botId
-          ? getBotGreeting(
-              game.botId,
-              nextWhite.isBot ? nextBlack.username : nextWhite.username,
-              lang
-            ).slice(0, 400)
-          : 'Rivincita iniziata!',
-      kind: game.isBotGame ? 'bot' : 'system',
+      text: greetingText,
+      kind: latestGame.isBotGame ? 'bot' : 'system',
       createdAt: serverTimestamp(),
+    };
+
+    return { rematchPayload, msgPayload };
+  };
+
+  const resolveColorAndAction = (latestGame: GameDocSnapshot) => {
+    const actualMyColor: PieceColor =
+      !latestGame.whiteIsBot && latestGame.whiteUid === uid
+        ? 'w'
+        : !latestGame.blackIsBot && latestGame.blackUid === uid
+          ? 'b'
+          : myColor;
+
+    const shouldCreateNow =
+      latestGame.isBotGame ||
+      (latestGame.rematchRequestedBy !== '' && latestGame.rematchRequestedBy !== actualMyColor);
+
+    return { actualMyColor, shouldCreateNow };
+  };
+
+  try {
+    const candidateNewGameId = makeEntityId('game');
+    const candidateMsgId = makeEntityId('msg');
+    const newGameRef = doc(db, 'games', candidateNewGameId);
+    const newMsgRef = doc(db, 'games', candidateNewGameId, 'messages', candidateMsgId);
+
+    const resultGameId = await runTransaction(db, async (tx) => {
+      const [latestGameSnap, userSnap] = await Promise.all([
+        tx.get(gameRef),
+        tx.get(userRef),
+      ]);
+      if (!latestGameSnap.exists()) return null;
+
+      const latestGame = mapGameDoc(latestGameSnap.id, latestGameSnap.data());
+      if (latestGame.status === 'active') return null;
+
+      if (latestGame.rematchGameId) {
+        return latestGame.rematchGameId;
+      }
+
+      const { actualMyColor, shouldCreateNow } = resolveColorAndAction(latestGame);
+
+      if (!shouldCreateNow) {
+        if (latestGame.rematchRequestedBy === actualMyColor) {
+          return null;
+        }
+        tx.update(gameRef, {
+          rematchRequestedBy: actualMyColor,
+          updatedAt: serverTimestamp(),
+        });
+        return null;
+      }
+
+      const userData = userSnap.exists() ? userSnap.data() : null;
+      const { rematchPayload, msgPayload } = buildRematchWriteData(
+        latestGame,
+        userData,
+        candidateNewGameId,
+        candidateMsgId
+      );
+
+      tx.set(newGameRef, rematchPayload);
+      tx.set(newMsgRef, msgPayload);
+      tx.update(gameRef, {
+        ...(latestGame.rematchRequestedBy ? { rematchRequestedBy: '' } : {}),
+        rematchGameId: candidateNewGameId,
+        updatedAt: serverTimestamp(),
+      });
+      if (userSnap.exists()) {
+        tx.update(userRef, {
+          online: true,
+          activeGameId: candidateNewGameId,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      return candidateNewGameId;
     });
-    batch.update(doc(db, 'games', game.id), {
-      rematchRequestedBy: '',
-      rematchGameId: newGameId,
-      updatedAt: serverTimestamp(),
-    });
-    batch.update(doc(db, 'users', uid), {
-      online: true,
-      activeGameId: newGameId,
-      updatedAt: serverTimestamp(),
-    });
-    await batch.commit();
-    return newGameId;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `games/${newGameId}`);
+
+    return resultGameId;
+  } catch (txError) {
+    console.warn('[BioChess][Rematch] Atomic rematch transaction failed, attempting resilient fallback:', txError);
+    try {
+      const [checkSnap, userSnap] = await Promise.all([
+        getDoc(gameRef),
+        getDoc(userRef),
+      ]);
+
+      if (checkSnap.exists()) {
+        const checked = mapGameDoc(checkSnap.id, checkSnap.data());
+        if (checked.rematchGameId) {
+          return checked.rematchGameId;
+        }
+        if (checked.status === 'active') {
+          return null;
+        }
+
+        const { actualMyColor, shouldCreateNow } = resolveColorAndAction(checked);
+        if (!shouldCreateNow) {
+          if (checked.rematchRequestedBy === actualMyColor) {
+            return null;
+          }
+          await updateDoc(gameRef, {
+            rematchRequestedBy: actualMyColor,
+            updatedAt: serverTimestamp(),
+          });
+          return null;
+        }
+
+        const fallbackGameId = makeEntityId('game');
+        const fallbackMsgId = makeEntityId('msg');
+        const fallbackGameRef = doc(db, 'games', fallbackGameId);
+        const fallbackMsgRef = doc(db, 'games', fallbackGameId, 'messages', fallbackMsgId);
+        const userData = userSnap.exists() ? userSnap.data() : null;
+        const { rematchPayload, msgPayload } = buildRematchWriteData(
+          checked,
+          userData,
+          fallbackGameId,
+          fallbackMsgId
+        );
+
+        try {
+          const batch = writeBatch(db);
+          batch.set(fallbackGameRef, rematchPayload);
+          batch.set(fallbackMsgRef, msgPayload);
+          if (userSnap.exists()) {
+            batch.update(userRef, {
+              online: true,
+              activeGameId: fallbackGameId,
+              updatedAt: serverTimestamp(),
+            });
+          }
+          await batch.commit();
+        } catch (batchWithUserErr) {
+          console.warn('[BioChess][Rematch] Fallback batch with user update failed, retrying without user update:', batchWithUserErr);
+          const minBatch = writeBatch(db);
+          minBatch.set(fallbackGameRef, rematchPayload);
+          minBatch.set(fallbackMsgRef, msgPayload);
+          await minBatch.commit();
+        }
+
+        try {
+          await updateDoc(gameRef, {
+            ...(checked.rematchRequestedBy ? { rematchRequestedBy: '' } : {}),
+            rematchGameId: fallbackGameId,
+            updatedAt: serverTimestamp(),
+          });
+        } catch (linkErr) {
+          console.warn('[BioChess][Rematch] Non-fatal: new game created but old game link skipped:', linkErr);
+        }
+
+        return fallbackGameId;
+      }
+    } catch (fallbackError) {
+      handleFirestoreError(fallbackError, OperationType.WRITE, `games/${game.id}`);
+    }
+    handleFirestoreError(txError, OperationType.WRITE, `games/${game.id}`);
   }
 }
 
@@ -1807,77 +2039,95 @@ export async function settleMyEloForGame(uid: string, gameDoc: GameDocSnapshot):
   if (!isWhite && !isBlack) return false;
   if ((isWhite && gameDoc.whiteEloApplied) || (isBlack && gameDoc.blackEloApplied)) return true;
 
+  const userRef = doc(db, 'users', uid);
+  const gameRef = doc(db, 'games', gameDoc.id);
+  const appliedField = isWhite ? 'whiteEloApplied' : 'blackEloApplied';
+
   try {
-    const [userSnap, latestGameSnap] = await Promise.all([
-      getDoc(doc(db, 'users', uid)),
-      getDoc(doc(db, 'games', gameDoc.id)),
-    ]);
-    if (!userSnap.exists() || !latestGameSnap.exists()) return false;
-    const latestGame = mapGameDoc(latestGameSnap.id, latestGameSnap.data());
-    if (latestGame.status === 'active') return false;
-    if ((isWhite && latestGame.whiteEloApplied) || (isBlack && latestGame.blackEloApplied)) return true;
+    const settled = await runTransaction(db, async (tx) => {
+      const [userSnap, latestGameSnap] = await Promise.all([
+        tx.get(userRef),
+        tx.get(gameRef),
+      ]);
+      if (!userSnap.exists() || !latestGameSnap.exists()) return false;
+      const latestGame = mapGameDoc(latestGameSnap.id, latestGameSnap.data());
+      if (latestGame.status === 'active') return false;
+      if ((isWhite && latestGame.whiteEloApplied) || (isBlack && latestGame.blackEloApplied)) {
+        return true;
+      }
 
-    const batch = writeBatch(db);
+      // Training games against Coaches or Dummy do NOT affect ranked ELO or W/L/D stats
+      if (latestGame.isBotGame && isTrainingBot(latestGame.botId)) {
+        tx.update(userRef, {
+          online: true,
+          activeGameId: '',
+          updatedAt: serverTimestamp(),
+        });
+        tx.update(gameRef, {
+          [appliedField]: true,
+          updatedAt: serverTimestamp(),
+        });
+        return true;
+      }
 
-    // Training games against Coaches or Dummy do NOT affect ranked ELO or W/L/D stats
-    if (latestGame.isBotGame && isTrainingBot(latestGame.botId)) {
-      batch.update(doc(db, 'users', uid), {
-        online: true,
-        activeGameId: '',
+      const u = userSnap.data();
+      const rawCurElo =
+        typeof u.elo === 'number' && Number.isFinite(u.elo) ? Math.max(0, Math.round(u.elo)) : 300;
+      const effectiveCurElo = Math.max(MIN_ELO, rawCurElo);
+      const curWins =
+        typeof u.wins === 'number' && Number.isFinite(u.wins) ? Math.max(0, Math.round(u.wins)) : 0;
+      const curLosses =
+        typeof u.losses === 'number' && Number.isFinite(u.losses)
+          ? Math.max(0, Math.round(u.losses))
+          : 0;
+      const curDraws =
+        typeof u.draws === 'number' && Number.isFinite(u.draws)
+          ? Math.max(0, Math.round(u.draws))
+          : 0;
+
+      const myColor: PieceColor = isWhite ? 'w' : 'b';
+      const isTimeout = latestGame.status === 'timeout';
+      const winDelta = isTimeout ? 20 : 50;
+      const lossDelta = isTimeout ? 5 : 76;
+
+      let nextElo = effectiveCurElo;
+      let nextWins = curWins;
+      let nextLosses = curLosses;
+      let nextDraws = curDraws;
+
+      if (latestGame.winner === 'draw' || latestGame.winner === '') {
+        nextDraws += 1;
+      } else if (latestGame.winner === myColor) {
+        nextWins += 1;
+        nextElo = Math.min(10000, effectiveCurElo + winDelta);
+      } else {
+        nextLosses += 1;
+        nextElo = Math.max(MIN_ELO, effectiveCurElo - lossDelta);
+      }
+
+      const curActiveGameId = typeof u.activeGameId === 'string' ? u.activeGameId : '';
+      const preservedActiveGameId =
+        curActiveGameId && curActiveGameId !== latestGame.id ? curActiveGameId : '';
+
+      tx.update(userRef, {
+        elo: nextElo,
+        wins: nextWins,
+        losses: nextLosses,
+        draws: nextDraws,
+        activeGameId: preservedActiveGameId,
         updatedAt: serverTimestamp(),
       });
-      batch.update(doc(db, 'games', gameDoc.id), {
-        [isWhite ? 'whiteEloApplied' : 'blackEloApplied']: true,
+      tx.update(gameRef, {
+        [appliedField]: true,
         updatedAt: serverTimestamp(),
       });
-      await batch.commit();
       return true;
-    }
-
-    const u = userSnap.data();
-    const curElo = typeof u.elo === 'number' && Number.isFinite(u.elo) ? Math.max(0, Math.round(u.elo)) : 300;
-    const curWins = typeof u.wins === 'number' && Number.isFinite(u.wins) ? Math.max(0, Math.round(u.wins)) : 0;
-    const curLosses = typeof u.losses === 'number' && Number.isFinite(u.losses) ? Math.max(0, Math.round(u.losses)) : 0;
-    const curDraws = typeof u.draws === 'number' && Number.isFinite(u.draws) ? Math.max(0, Math.round(u.draws)) : 0;
-
-    const myColor: PieceColor = isWhite ? 'w' : 'b';
-    const isTimeout = latestGame.status === 'timeout';
-    const winDelta = isTimeout ? 20 : 50;
-    const lossDelta = isTimeout ? 5 : 76;
-
-    let nextElo = curElo;
-    let nextWins = curWins;
-    let nextLosses = curLosses;
-    let nextDraws = curDraws;
-
-    if (latestGame.winner === 'draw' || latestGame.winner === '') {
-      nextDraws += 1;
-    } else if (latestGame.winner === myColor) {
-      nextWins += 1;
-      nextElo = Math.min(10000, curElo + winDelta);
-    } else {
-      nextLosses += 1;
-      nextElo = Math.max(0, curElo - lossDelta);
-    }
-
-    batch.update(doc(db, 'users', uid), {
-      elo: nextElo,
-      wins: nextWins,
-      losses: nextLosses,
-      draws: nextDraws,
-      activeGameId: '',
-      updatedAt: serverTimestamp(),
     });
-    batch.update(doc(db, 'games', gameDoc.id), {
-      [isWhite ? 'whiteEloApplied' : 'blackEloApplied']: true,
-      updatedAt: serverTimestamp(),
-    });
-    await batch.commit();
-    return true;
+
+    return settled;
   } catch (error) {
-    // Ignore concurrent settlement from another tab/listener if already applied on server
     try {
-      const checkSnap = await getDoc(doc(db, 'games', gameDoc.id));
+      const checkSnap = await getDoc(gameRef);
       if (checkSnap.exists()) {
         const checked = mapGameDoc(checkSnap.id, checkSnap.data());
         if ((isWhite && checked.whiteEloApplied) || (isBlack && checked.blackEloApplied)) {

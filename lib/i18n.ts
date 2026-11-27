@@ -73,6 +73,7 @@ export interface UiDictionary {
   reviewTag: string;
   analyzeWithCoach: string;
   premoveLabel: string;
+  dummyTrainingHint: string;
 }
 
 const IT: UiDictionary = {
@@ -150,6 +151,7 @@ const IT: UiDictionary = {
   reviewTag: 'Revisione Live',
   analyzeWithCoach: 'Revisione Coach',
   premoveLabel: 'Premossa',
+  dummyTrainingHint: 'Modalità Dummy: muovi entrambi i colori. Le premosse si usano contro i Bot o giocatori online.',
 };
 
 const EN: UiDictionary = {
@@ -227,6 +229,7 @@ const EN: UiDictionary = {
   reviewTag: 'Live Review',
   analyzeWithCoach: 'Coach Review',
   premoveLabel: 'Premove',
+  dummyTrainingHint: 'Dummy mode: you move both sides. Premoves are active against Bots & online players.',
 };
 
 const ES: UiDictionary = {

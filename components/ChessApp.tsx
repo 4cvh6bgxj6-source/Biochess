@@ -2,8 +2,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
-import { Chess } from 'chess.js';
-import { AnimatePresence, motion } from 'motion/react';
+import { Chess, type Square } from 'chess.js';
+import { motion } from 'motion/react';
 import {
   getRedirectResult,
   onAuthStateChanged,
@@ -12,7 +12,7 @@ import {
   signOut,
   type User,
 } from 'firebase/auth';
-import { Bot, GraduationCap, LogOut, Swords, TrendingUp, Trophy } from 'lucide-react';
+import { Bot, GraduationCap, Loader2, LogOut, Swords, TrendingUp, Trophy } from 'lucide-react';
 import type {
   BotId,
   Challenge,
@@ -33,6 +33,7 @@ import { soundFX } from '@/lib/sound';
 import { auth, googleProvider } from '@/lib/firebase';
 import {
   assembleGameState,
+  buildChessWithHistory,
   cancelPendingChallenge,
   claimTimeoutInFirestore,
   createBotGameInFirestore,
@@ -69,6 +70,20 @@ import { IncomingChallengeToast } from './IncomingChallengeToast';
 import { LanguagePicker } from './LanguagePicker';
 import { BoardThemeProvider } from './BoardThemeContext';
 import { BoardStylePicker } from './BoardStylePicker';
+
+interface QueuedMoveEntry {
+  id: string;
+  gameId: string;
+  ply: number;
+  from: string;
+  to: string;
+  promotion?: 'q' | 'r' | 'b' | 'n';
+  fen: string;
+  pgn: string;
+  turn: PieceColor;
+  move: GameMove;
+  isGameOver: boolean;
+}
 
 export function ChessApp() {
   const [authReady, setAuthReady] = useState(false);
@@ -121,10 +136,14 @@ export function ChessApp() {
 
   const settlingGameIdsRef = useRef<Set<string>>(new Set());
   const settledGameIdsRef = useRef<Set<string>>(new Set());
+  const eloRetryCountRef = useRef<Record<string, number>>({});
+  const eloRetryTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const attemptSettleGameEloRef = useRef<((uid: string, gameDoc: GameDocSnapshot) => void) | null>(null);
   const botTurnKeyRef = useRef<string>('');
   const latestGameRef = useRef<GameState | null>(null);
   const liveTimesRef = useRef<{ w: number; b: number }>({ w: 0, b: 0 });
   const activeGameIdRef = useRef<string | null>(null);
+  const viewModeRef = useRef<'lobby' | 'game' | 'coach' | 'stats'>('lobby');
   const profileActiveGameIdRef = useRef<string>('');
   const hasRestoredInitialGameRef = useRef(false);
   const knownActivePvpIdsRef = useRef<Set<string>>(new Set());
@@ -143,19 +162,31 @@ export function ChessApp() {
   const prevChatCountRef = useRef<Record<string, number>>({});
   const prevIncomingChallengeIdsRef = useRef<Set<string>>(new Set());
   const lastLocallyPlayedMoveRef = useRef<{ gameId: string; ply: number } | null>(null);
-  const submittingMoveRef = useRef<boolean>(false);
+  const isFlushingQueueRef = useRef<boolean>(false);
+  const rematchInFlightGameIdRef = useRef<string | null>(null);
   const [isSubmittingMove, setIsSubmittingMove] = useState(false);
+  const [isRematchSubmitting, setIsRematchSubmitting] = useState(false);
   const authUserRef = useRef<User | null>(null);
   const activeGameRef = useRef<GameState | null>(null);
   const activeGameDocRef = useRef<GameDocSnapshot | null>(null);
+  const activeMovesStateRef = useRef<{ gameId: string; moves: GameMove[] }>({
+    gameId: '',
+    moves: [],
+  });
   const activeLangRef = useRef<string>('it');
-  const [optimisticMoveState, setOptimisticMoveState] = useState<{
+  const [optimisticMoves, setOptimisticMoves] = useState<QueuedMoveEntry[]>([]);
+  const optimisticMovesRef = useRef<QueuedMoveEntry[]>([]);
+  const pendingCommitQueueRef = useRef<QueuedMoveEntry[]>([]);
+  const lastCommittedInFlushRef = useRef<{
     gameId: string;
-    baseMovesLen: number;
+    movesCount: number;
     fen: string;
     pgn: string;
     turn: PieceColor;
-    move: GameMove;
+    moves: GameMove[];
+    status: GameState['status'];
+    whiteTimeMs: number;
+    blackTimeMs: number;
   } | null>(null);
 
   if (runtimeFatalError) {
@@ -166,6 +197,38 @@ export function ChessApp() {
     setRuntimeFatalError(err);
   }, []);
 
+  const openGameRoom = useCallback((gameId: string) => {
+    if (!gameId) return;
+    knownActivePvpIdsRef.current.add(gameId);
+    if (activeGameIdRef.current === gameId) {
+      viewModeRef.current = 'game';
+      setViewMode('game');
+      return;
+    }
+    activeGameIdRef.current = gameId;
+    viewModeRef.current = 'game';
+    activeGameDocRef.current = null;
+    activeMovesStateRef.current = { gameId: '', moves: [] };
+    botTurnKeyRef.current = '';
+    lastLocallyPlayedMoveRef.current = null;
+    isFlushingQueueRef.current = false;
+    rematchInFlightGameIdRef.current = null;
+    timeoutClaimedIdRef.current = null;
+    pendingCommitQueueRef.current = [];
+    optimisticMovesRef.current = [];
+    lastCommittedInFlushRef.current = null;
+    setIsSubmittingMove(false);
+    setIsRematchSubmitting(false);
+    setOptimisticMoves([]);
+    setLiveClock(null);
+    setGameError(null);
+    setActiveGameDoc(null);
+    setActiveMovesState({ gameId: '', moves: [] });
+    setActiveMessagesState({ gameId: '', messages: [] });
+    setActiveGameId(gameId);
+    setViewMode('game');
+  }, []);
+
   const attemptSettleGameElo = useCallback((uid: string, gameDoc: GameDocSnapshot) => {
     if (gameDoc.status === 'active') return;
     const isWhite = !gameDoc.whiteIsBot && gameDoc.whiteUid === uid;
@@ -173,24 +236,64 @@ export function ChessApp() {
     if (!isWhite && !isBlack) return;
     if ((isWhite && gameDoc.whiteEloApplied) || (isBlack && gameDoc.blackEloApplied)) {
       settledGameIdsRef.current.add(gameDoc.id);
+      if (eloRetryTimersRef.current[gameDoc.id]) {
+        clearTimeout(eloRetryTimersRef.current[gameDoc.id]);
+        delete eloRetryTimersRef.current[gameDoc.id];
+      }
       return;
     }
     if (settledGameIdsRef.current.has(gameDoc.id) || settlingGameIdsRef.current.has(gameDoc.id)) {
       return;
     }
+    if (eloRetryTimersRef.current[gameDoc.id]) {
+      clearTimeout(eloRetryTimersRef.current[gameDoc.id]);
+      delete eloRetryTimersRef.current[gameDoc.id];
+    }
     settlingGameIdsRef.current.add(gameDoc.id);
+
+    const scheduleRetry = () => {
+      const delays = [450, 1000, 2000, 3500, 6000];
+      const attempt = eloRetryCountRef.current[gameDoc.id] ?? 0;
+      if (attempt >= delays.length) return;
+      eloRetryCountRef.current[gameDoc.id] = attempt + 1;
+      const delayMs = delays[attempt];
+      eloRetryTimersRef.current[gameDoc.id] = setTimeout(() => {
+        delete eloRetryTimersRef.current[gameDoc.id];
+        const latestAuth = authUserRef.current;
+        if (!latestAuth || latestAuth.uid !== uid) return;
+        attemptSettleGameEloRef.current?.(uid, gameDoc);
+      }, delayMs);
+    };
+
     void settleMyEloForGame(uid, gameDoc)
       .then((didSettle) => {
         if (didSettle) {
           settledGameIdsRef.current.add(gameDoc.id);
+          delete eloRetryCountRef.current[gameDoc.id];
+        } else {
+          scheduleRetry();
         }
       })
       .catch((err: Error) => {
         console.error('ELO settlement warning:', err);
+        scheduleRetry();
       })
       .finally(() => {
         settlingGameIdsRef.current.delete(gameDoc.id);
       });
+  }, []);
+
+  useEffect(() => {
+    attemptSettleGameEloRef.current = attemptSettleGameElo;
+  }, [attemptSettleGameElo]);
+
+  useEffect(() => {
+    const timersRef = eloRetryTimersRef.current;
+    return () => {
+      for (const timer of Object.values(timersRef)) {
+        clearTimeout(timer);
+      }
+    };
   }, []);
 
   const profileLoaded = Boolean(authUser && loadedProfileUid === authUser.uid);
@@ -235,6 +338,9 @@ export function ChessApp() {
       if (!user) {
         setProfile(null);
         setLoadedProfileUid(null);
+        activeGameIdRef.current = null;
+        activeGameDocRef.current = null;
+        activeMovesStateRef.current = { gameId: '', moves: [] };
         setActiveGameId(null);
         setActiveGameDoc(null);
         setActiveMovesState({ gameId: '', moves: [] });
@@ -253,9 +359,17 @@ export function ChessApp() {
         knownActivePvpIdsRef.current = new Set();
         settlingGameIdsRef.current.clear();
         settledGameIdsRef.current.clear();
-        submittingMoveRef.current = false;
+        for (const timer of Object.values(eloRetryTimersRef.current)) {
+          clearTimeout(timer);
+        }
+        eloRetryTimersRef.current = {};
+        eloRetryCountRef.current = {};
+        isFlushingQueueRef.current = false;
+        pendingCommitQueueRef.current = [];
+        optimisticMovesRef.current = [];
+        lastCommittedInFlushRef.current = null;
         setIsSubmittingMove(false);
-        setOptimisticMoveState(null);
+        setOptimisticMoves([]);
       }
     });
     return () => unsub();
@@ -282,6 +396,10 @@ export function ChessApp() {
   useEffect(() => {
     activeGameIdRef.current = activeGameId;
   }, [activeGameId]);
+
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
 
   useEffect(() => {
     profileActiveGameIdRef.current = profile?.activeGameId || '';
@@ -395,20 +513,24 @@ export function ChessApp() {
               (targetActiveId ? activeGames.find((g) => g.id === targetActiveId) : undefined);
 
             if (toRestore) {
-              setActiveGameId(toRestore.id);
-              setViewMode('game');
+              openGameRoom(toRestore.id);
             }
           }
         } else {
-          // Only auto-open newly started PvP matches while user is in the lobby (never hijack or restore stale bot games)
+          // Auto-open newly started PvP matches when user is in lobby or viewing an already finished game
           const brandNewPvp = activePvpGames.find((g) => !knownActivePvpIdsRef.current.has(g.id));
           for (const g of activePvpGames) {
             knownActivePvpIdsRef.current.add(g.id);
           }
-          if (brandNewPvp && !activeGameIdRef.current) {
+          const isCurrentlyInActiveGame = Boolean(
+            viewModeRef.current === 'game' &&
+              activeGameIdRef.current &&
+              activeGameDocRef.current?.id === activeGameIdRef.current &&
+              activeGameDocRef.current.status === 'active'
+          );
+          if (brandNewPvp && !isCurrentlyInActiveGame) {
             soundFX.playChallenge();
-            setActiveGameId(brandNewPvp.id);
-            setViewMode('game');
+            openGameRoom(brandNewPvp.id);
           }
         }
 
@@ -429,7 +551,7 @@ export function ChessApp() {
       unsubMyGames();
       unsubMyReviews();
     };
-  }, [authReady, authUser, hasProfile, handleListenerError, attemptSettleGameElo]);
+  }, [authReady, authUser, hasProfile, handleListenerError, attemptSettleGameElo, openGameRoom]);
 
   // Settle ELO immediately when activeGameDoc finishes (even if user has >500 historical games)
   useEffect(() => {
@@ -450,20 +572,26 @@ export function ChessApp() {
     const unsub = subscribeGameRoom(
       roomGameId,
       (docSnap) => {
+        if (activeGameIdRef.current !== roomGameId) return;
         setActiveGameDoc(docSnap);
         if (docSnap?.rematchGameId && docSnap.rematchGameId !== roomGameId) {
-          setActiveGameId(docSnap.rematchGameId);
-          setViewMode('game');
+          openGameRoom(docSnap.rematchGameId);
           soundFX.playChallenge();
         }
       },
-      (moves) => setActiveMovesState({ gameId: roomGameId, moves }),
-      (messages) => setActiveMessagesState({ gameId: roomGameId, messages }),
+      (moves) => {
+        if (activeGameIdRef.current !== roomGameId) return;
+        setActiveMovesState({ gameId: roomGameId, moves });
+      },
+      (messages) => {
+        if (activeGameIdRef.current !== roomGameId) return;
+        setActiveMessagesState({ gameId: roomGameId, messages });
+      },
       handleListenerError
     );
 
     return () => unsub();
-  }, [authReady, authUser, hasProfile, activeGameId, handleListenerError]);
+  }, [authReady, authUser, hasProfile, activeGameId, handleListenerError, openGameRoom]);
 
   const activeGame: GameState | null = useMemo(() => {
     if (!activeGameId || !activeGameDoc || activeGameDoc.id !== activeGameId) return null;
@@ -471,24 +599,70 @@ export function ChessApp() {
     const messages = activeMessagesState.gameId === activeGameId ? activeMessagesState.messages : [];
     const assembled = assembleGameState(activeGameDoc, baseMoves, messages);
 
-    if (
-      optimisticMoveState &&
-      optimisticMoveState.gameId === activeGameId &&
-      assembled.status === 'active' &&
-      baseMoves.length <= optimisticMoveState.baseMovesLen
-    ) {
-      const applyFen = activeGameDoc.movesCount <= optimisticMoveState.baseMovesLen;
-      return {
-        ...assembled,
-        fen: applyFen ? optimisticMoveState.fen : assembled.fen,
-        pgn: applyFen ? optimisticMoveState.pgn : assembled.pgn,
-        turn: applyFen ? optimisticMoveState.turn : assembled.turn,
-        moves: [...baseMoves, optimisticMoveState.move],
-      };
+    const queuedForGame = optimisticMoves.filter((q) => q.gameId === activeGameId);
+    if (assembled.status === 'active' && queuedForGame.length > 0) {
+      const unseenMoves = queuedForGame
+        .filter((q) => q.ply > baseMoves.length)
+        .map((q) => q.move);
+      const uncommitted = queuedForGame.filter((q) => q.ply > activeGameDoc.movesCount);
+      const latestUncommitted =
+        uncommitted.length > 0 ? uncommitted[uncommitted.length - 1] : null;
+
+      if (unseenMoves.length > 0 || latestUncommitted) {
+        return {
+          ...assembled,
+          fen: latestUncommitted ? latestUncommitted.fen : assembled.fen,
+          pgn: latestUncommitted ? latestUncommitted.pgn : assembled.pgn,
+          turn: latestUncommitted ? latestUncommitted.turn : assembled.turn,
+          moves: unseenMoves.length > 0 ? [...baseMoves, ...unseenMoves] : baseMoves,
+        };
+      }
     }
 
     return assembled;
-  }, [activeGameId, activeGameDoc, activeMovesState, activeMessagesState, optimisticMoveState]);
+  }, [activeGameId, activeGameDoc, activeMovesState, activeMessagesState, optimisticMoves]);
+
+  // Prune optimistic moves once Firestore doc & moves subcollection snapshots have caught up
+  useEffect(() => {
+    const docId = activeGameDoc?.id || '';
+    const docMoves = activeGameDoc?.movesCount ?? 0;
+    const docStatus = activeGameDoc?.status || 'active';
+    const subMovesLen =
+      activeMovesState.gameId === activeGameId ? activeMovesState.moves.length : 0;
+
+    if (
+      lastCommittedInFlushRef.current &&
+      (!activeGameId ||
+        lastCommittedInFlushRef.current.gameId !== activeGameId ||
+        (docId === activeGameId && docMoves >= lastCommittedInFlushRef.current.movesCount))
+    ) {
+      lastCommittedInFlushRef.current = null;
+    }
+
+    const filtered = optimisticMovesRef.current.filter((q) => {
+      if (!activeGameId || q.gameId !== activeGameId) return false;
+      if (docId === activeGameId) {
+        if (docStatus !== 'active') return false;
+        if (q.ply <= docMoves && q.ply <= subMovesLen) return false;
+      }
+      return true;
+    });
+
+    if (filtered.length !== optimisticMovesRef.current.length) {
+      optimisticMovesRef.current = filtered;
+      const t = setTimeout(() => {
+        setOptimisticMoves(filtered);
+      }, 0);
+      return () => clearTimeout(t);
+    }
+  }, [
+    activeGameId,
+    activeGameDoc?.id,
+    activeGameDoc?.movesCount,
+    activeGameDoc?.status,
+    activeMovesState.gameId,
+    activeMovesState.moves.length,
+  ]);
 
   // Audio FX for moves, game end, and opponent chat messages
   useEffect(() => {
@@ -544,6 +718,18 @@ export function ChessApp() {
     prevChatCountRef.current[gId] = activeGame.chat.length;
   }, [activeGame, profileUsername]);
 
+  const hasPendingOptimisticForActive = Boolean(
+    activeGameId &&
+      activeGameDoc &&
+      optimisticMoves.some(
+        (q) =>
+          q.gameId === activeGameId &&
+          (q.ply > activeGameDoc.movesCount ||
+            q.ply >
+              (activeMovesState.gameId === activeGameId ? activeMovesState.moves.length : 0))
+      )
+  );
+
   const isBoardSynced = Boolean(
     activeGame &&
       activeGameDoc &&
@@ -551,11 +737,7 @@ export function ChessApp() {
       activeMovesState.gameId === activeGame.id &&
       activeGame.moves.length === activeGameDoc.movesCount &&
       !isSubmittingMove &&
-      !(
-        optimisticMoveState &&
-        optimisticMoveState.gameId === activeGame.id &&
-        activeMovesState.moves.length <= optimisticMoveState.baseMovesLen
-      )
+      !hasPendingOptimisticForActive
   );
 
   const activeDocMovesSynced = Boolean(
@@ -564,9 +746,12 @@ export function ChessApp() {
       activeGameDoc.movesCount >= 1
   );
 
+  const isDummyActiveGame = Boolean(activeGame?.isBotGame && activeGame?.botId === 'dummy');
+
   const isClockRunning = Boolean(
     activeGame &&
       activeGame.status === 'active' &&
+      !isDummyActiveGame &&
       activeGame.timeControl !== 'unlimited' &&
       activeDocMovesSynced &&
       activeGame.lastMoveAt > 0
@@ -594,6 +779,10 @@ export function ChessApp() {
   useEffect(() => {
     activeGameDocRef.current = activeGameDoc;
   }, [activeGameDoc]);
+
+  useEffect(() => {
+    activeMovesStateRef.current = activeMovesState;
+  }, [activeMovesState]);
 
   useEffect(() => {
     liveTimesRef.current = { w: whiteTimeMs, b: blackTimeMs };
@@ -664,6 +853,11 @@ export function ChessApp() {
               console.info('[BioChess][Timer] Timeout claim outcome', { claimKey, outcome });
               if (outcome === 'claimed') {
                 timeoutClaimedGameIdsRef.current.add(clockGameId);
+              } else {
+                timeoutRetryAfterRef.current[claimKey] = Date.now() + 2000;
+                if (timeoutClaimedIdRef.current === claimKey) {
+                  timeoutClaimedIdRef.current = null;
+                }
               }
             })
             .catch((err: Error) => {
@@ -881,6 +1075,8 @@ export function ChessApp() {
       }
     }
     await signOut(auth);
+    activeGameIdRef.current = null;
+    activeGameDocRef.current = null;
     setProfile(null);
     setActiveGameId(null);
     setViewMode('lobby');
@@ -892,152 +1088,280 @@ export function ChessApp() {
     soundFX.setMuted(next);
   }
 
+  const flushMoveQueue = useCallback(async () => {
+    if (isFlushingQueueRef.current) return;
+    isFlushingQueueRef.current = true;
+    setIsSubmittingMove(true);
+
+    try {
+      while (pendingCommitQueueRef.current.length > 0) {
+        const item = pendingCommitQueueRef.current[0];
+        const currentUser = authUserRef.current;
+        const docSnap = activeGameDocRef.current;
+        const movesSnap = activeMovesStateRef.current;
+
+        if (!currentUser || !docSnap || docSnap.id !== item.gameId) {
+          pendingCommitQueueRef.current = pendingCommitQueueRef.current.filter(
+            (q) => q.gameId !== item.gameId
+          );
+          optimisticMovesRef.current = optimisticMovesRef.current.filter(
+            (q) => q.gameId !== item.gameId
+          );
+          setOptimisticMoves([...optimisticMovesRef.current]);
+          continue;
+        }
+
+        const baseMoves = movesSnap.gameId === docSnap.id ? movesSnap.moves : [];
+        let commitGame = assembleGameState(docSnap, baseMoves, []);
+        let expectedMovesCount = Math.max(baseMoves.length, docSnap.movesCount);
+
+        const cachedFlush = lastCommittedInFlushRef.current;
+        if (
+          cachedFlush &&
+          cachedFlush.gameId === item.gameId &&
+          cachedFlush.movesCount > expectedMovesCount
+        ) {
+          commitGame = {
+            ...commitGame,
+            fen: cachedFlush.fen,
+            pgn: cachedFlush.pgn,
+            turn: cachedFlush.turn,
+            moves: cachedFlush.moves,
+            status: cachedFlush.status,
+            whiteTimeMs: cachedFlush.whiteTimeMs,
+            blackTimeMs: cachedFlush.blackTimeMs,
+          };
+          expectedMovesCount = cachedFlush.movesCount;
+        }
+
+        if (commitGame.status !== 'active') {
+          pendingCommitQueueRef.current = pendingCommitQueueRef.current.filter(
+            (q) => q.gameId !== item.gameId
+          );
+          optimisticMovesRef.current = optimisticMovesRef.current.filter(
+            (q) => q.gameId !== item.gameId
+          );
+          setOptimisticMoves([...optimisticMovesRef.current]);
+          continue;
+        }
+
+        let liveWhiteMs = commitGame.whiteTimeMs;
+        let liveBlackMs = commitGame.blackTimeMs;
+        const isDummyMode = Boolean(commitGame.isBotGame && commitGame.botId === 'dummy');
+        if (
+          !isDummyMode &&
+          commitGame.timeControl !== 'unlimited' &&
+          expectedMovesCount >= 1 &&
+          commitGame.lastMoveAt > 0
+        ) {
+          const elapsed = Math.max(0, Date.now() - commitGame.lastMoveAt);
+          if (commitGame.turn === 'w') {
+            liveWhiteMs = Math.max(0, commitGame.whiteTimeMs - elapsed);
+          } else {
+            liveBlackMs = Math.max(0, commitGame.blackTimeMs - elapsed);
+          }
+        }
+
+        try {
+          const res = await submitMoveToFirestore({
+            game: commitGame,
+            uid: currentUser.uid,
+            from: item.from,
+            to: item.to,
+            promotion: item.promotion,
+            liveWhiteMs,
+            liveBlackMs,
+            expectedMovesCount,
+          });
+
+          pendingCommitQueueRef.current.shift();
+
+          if (!res.ok) {
+            lastLocallyPlayedMoveRef.current = null;
+            pendingCommitQueueRef.current = pendingCommitQueueRef.current.filter(
+              (q) => q.gameId !== item.gameId
+            );
+            optimisticMovesRef.current = optimisticMovesRef.current.filter(
+              (q) => q.gameId !== item.gameId || q.ply < item.ply
+            );
+            setOptimisticMoves([...optimisticMovesRef.current]);
+            setGameError(res.error);
+            setTimeout(() => setGameError(null), 3000);
+            break;
+          }
+
+          lastCommittedInFlushRef.current = {
+            gameId: item.gameId,
+            movesCount: item.ply,
+            fen: item.fen,
+            pgn: item.pgn,
+            turn: item.turn,
+            moves: [...commitGame.moves, { ...item.move, quality: res.quality }],
+            status: res.nextStatus,
+            whiteTimeMs: liveWhiteMs,
+            blackTimeMs: liveBlackMs,
+          };
+
+          if (commitGame.isBotGame) {
+            humanMoveMetaRef.current = {
+              gameId: item.gameId,
+              ply: item.ply,
+              quality: res.quality,
+              captured: res.captured,
+              inCheck: res.inCheck,
+            };
+          }
+        } catch (err) {
+          pendingCommitQueueRef.current.shift();
+          lastLocallyPlayedMoveRef.current = null;
+          pendingCommitQueueRef.current = pendingCommitQueueRef.current.filter(
+            (q) => q.gameId !== item.gameId
+          );
+          optimisticMovesRef.current = optimisticMovesRef.current.filter(
+            (q) => q.gameId !== item.gameId || q.ply < item.ply
+          );
+          setOptimisticMoves([...optimisticMovesRef.current]);
+          console.error('Move submission warning:', err);
+          setGameError('Impossibile completare la mossa: controlla connessione o orologio.');
+          setTimeout(() => setGameError(null), 3500);
+          break;
+        }
+      }
+    } finally {
+      isFlushingQueueRef.current = false;
+      setIsSubmittingMove(pendingCommitQueueRef.current.length > 0);
+    }
+  }, []);
+
   const handlePlayerMove = useCallback(
-    async (from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n') => {
+    (from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n') => {
       const currentUser = authUserRef.current;
-      const snapshotGame = activeGameRef.current;
-      const snapshotDoc = activeGameDocRef.current;
-      if (!currentUser || !snapshotGame || snapshotGame.status !== 'active') return;
-      if (submittingMoveRef.current) return;
+      const docSnap = activeGameDocRef.current;
+      const movesSnap = activeMovesStateRef.current;
+      if (!currentUser || !docSnap || docSnap.status !== 'active') return;
+
+      const gameId = docSnap.id;
+      const existingQueued = optimisticMovesRef.current.filter((q) => q.gameId === gameId);
+      if (existingQueued.some((q) => q.isGameOver)) {
+        return;
+      }
+
+      const subMovesLen = movesSnap.gameId === gameId ? movesSnap.moves.length : 0;
+      const committedCount = Math.max(docSnap.movesCount, subMovesLen);
+      const pendingAhead = existingQueued.filter((q) => q.ply > docSnap.movesCount);
+      const latestAhead =
+        pendingAhead.length > 0 ? pendingAhead[pendingAhead.length - 1] : null;
+
+      const effectiveFen = latestAhead ? latestAhead.fen : docSnap.fen;
+      const effectivePlyBase = Math.max(
+        committedCount,
+        latestAhead ? latestAhead.ply : 0
+      );
+
       soundFX.unlock();
 
-      const docMovesCount =
-        snapshotDoc && snapshotDoc.id === snapshotGame.id
-          ? snapshotDoc.movesCount
-          : snapshotGame.moves.length;
-      const baseMovesLen = Math.max(snapshotGame.moves.length, docMovesCount);
-
-      let liveWhiteMs = snapshotGame.whiteTimeMs;
-      let liveBlackMs = snapshotGame.blackTimeMs;
-      if (
-        snapshotGame.timeControl !== 'unlimited' &&
-        baseMovesLen >= 1 &&
-        snapshotGame.lastMoveAt > 0
-      ) {
-        const elapsed = Math.max(0, Date.now() - snapshotGame.lastMoveAt);
-        if (snapshotGame.turn === 'w') {
-          liveWhiteMs = Math.max(0, snapshotGame.whiteTimeMs - elapsed);
-        } else {
-          liveBlackMs = Math.max(0, snapshotGame.blackTimeMs - elapsed);
-        }
-      }
-
-      // Preview move locally for 0ms visual & audio responsiveness (even before Firestore commits)
-      let playedLocally = false;
+      let previewChess: Chess;
+      let movingColor: PieceColor;
+      let previewRes: ReturnType<Chess['move']>;
       try {
-        const previewChess = new Chess(snapshotGame.fen);
-        const movingColor = previewChess.turn();
-        const previewRes = previewChess.move({
-          from,
-          to,
-          promotion: promotion || 'q',
+        const committedMoves = movesSnap.gameId === gameId ? movesSnap.moves : [];
+        const baseChess = buildChessWithHistory({
+          fen: docSnap.fen,
+          pgn: docSnap.pgn,
+          moves: committedMoves,
         });
-        if (previewRes) {
-          playedLocally = true;
-          lastLocallyPlayedMoveRef.current = {
-            gameId: snapshotGame.id,
-            ply: baseMovesLen + 1,
-          };
-          setOptimisticMoveState({
-            gameId: snapshotGame.id,
-            baseMovesLen,
-            fen: previewChess.fen(),
-            pgn: previewChess.pgn(),
-            turn: previewChess.turn(),
-            move: {
-              san: previewRes.san,
-              from: previewRes.from,
-              to: previewRes.to,
-              fen: previewChess.fen(),
-              color: movingColor,
-              captured: previewRes.captured,
-              promotion: previewRes.promotion,
-              timestamp: Date.now(),
-            },
+        for (const q of pendingAhead) {
+          baseChess.move({
+            from: q.from,
+            to: q.to,
+            ...(q.promotion ? { promotion: q.promotion } : {}),
           });
-          const isOver = previewChess.isGameOver();
-          if (isOver) {
-            soundFX.playGameOver(true);
-          } else if (previewChess.inCheck()) {
-            soundFX.playCheck(Boolean(previewRes.captured));
-          } else if (previewRes.flags.includes('k') || previewRes.flags.includes('q')) {
-            soundFX.playCastle();
-          } else if (previewRes.promotion) {
-            soundFX.playPromote();
-          } else if (previewRes.captured) {
-            soundFX.playCapture();
-          } else {
-            soundFX.playMove();
-          }
         }
-      } catch {
-        // let submitMoveToFirestore report invalid moves if any
-      }
-
-      submittingMoveRef.current = true;
-      setIsSubmittingMove(true);
-      try {
-        const res = await submitMoveToFirestore({
-          game: snapshotGame,
-          uid: currentUser.uid,
+        previewChess = baseChess.fen() === effectiveFen ? baseChess : new Chess(effectiveFen);
+        movingColor = previewChess.turn();
+        const fromPiece = previewChess.get(from as Square);
+        const isPawnPromotion =
+          fromPiece?.type === 'p' &&
+          ((fromPiece.color === 'w' && to[1] === '8') ||
+            (fromPiece.color === 'b' && to[1] === '1'));
+        previewRes = previewChess.move({
           from,
           to,
-          promotion,
-          liveWhiteMs,
-          liveBlackMs,
-          expectedMovesCount: docMovesCount,
+          ...(promotion ? { promotion } : isPawnPromotion ? { promotion: 'q' } : {}),
         });
-        if (!res.ok) {
-          if (playedLocally) {
-            lastLocallyPlayedMoveRef.current = null;
-            setOptimisticMoveState((prev) =>
-              prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen
-                ? null
-                : prev
-            );
-          }
-          setGameError(res.error);
-          setTimeout(() => setGameError(null), 3000);
-          return;
-        }
-        if (snapshotGame.isBotGame) {
-          humanMoveMetaRef.current = {
-            gameId: snapshotGame.id,
-            ply: baseMovesLen + 1,
-            quality: res.quality,
-            captured: res.captured,
-            inCheck: res.inCheck,
-          };
-        }
-      } catch (err) {
-        if (playedLocally) {
-          lastLocallyPlayedMoveRef.current = null;
-          setOptimisticMoveState((prev) =>
-            prev && prev.gameId === snapshotGame.id && prev.baseMovesLen === baseMovesLen
-              ? null
-              : prev
-          );
-        }
-        console.error('Move submission warning:', err);
-        setGameError('Impossibile completare la mossa: controlla connessione o orologio.');
-        setTimeout(() => setGameError(null), 3500);
-      } finally {
-        submittingMoveRef.current = false;
-        setIsSubmittingMove(false);
+      } catch {
+        return;
       }
+      if (!previewRes) return;
+
+      const nextPly = effectivePlyBase + 1;
+      lastLocallyPlayedMoveRef.current = { gameId, ply: nextPly };
+
+      const isOver = previewChess.isGameOver();
+      if (isOver) {
+        soundFX.playGameOver(true);
+      } else if (previewChess.inCheck()) {
+        soundFX.playCheck(Boolean(previewRes.captured));
+      } else if (previewRes.flags.includes('k') || previewRes.flags.includes('q')) {
+        soundFX.playCastle();
+      } else if (previewRes.promotion) {
+        soundFX.playPromote();
+      } else if (previewRes.captured) {
+        soundFX.playCapture();
+      } else {
+        soundFX.playMove();
+      }
+
+      const entry: QueuedMoveEntry = {
+        id: `${gameId}_${nextPly}_${Date.now()}`,
+        gameId,
+        ply: nextPly,
+        from,
+        to,
+        promotion: (previewRes.promotion as 'q' | 'r' | 'b' | 'n' | undefined) || promotion,
+        fen: previewChess.fen(),
+        pgn: previewChess.pgn(),
+        turn: previewChess.turn(),
+        move: {
+          san: previewRes.san,
+          from: previewRes.from,
+          to: previewRes.to,
+          fen: previewChess.fen(),
+          color: movingColor,
+          captured: previewRes.captured,
+          promotion: previewRes.promotion,
+          timestamp: Date.now(),
+        },
+        isGameOver: isOver,
+      };
+
+      optimisticMovesRef.current = [...optimisticMovesRef.current, entry];
+      pendingCommitQueueRef.current = [...pendingCommitQueueRef.current, entry];
+      setOptimisticMoves(optimisticMovesRef.current);
+      setIsSubmittingMove(true);
+
+      void flushMoveQueue();
     },
-    []
+    [flushMoveQueue]
   );
 
   const needsUsernameChoice = Boolean(authReady && authUser && profileLoaded && !profile);
 
   function navigateToLobbyTab(tab?: LobbyTab) {
-    if (activeGame && activeGame.status !== 'active') {
+    if (!activeGame || activeGame.status !== 'active') {
+      const staleGameId = activeGameIdRef.current;
+      activeGameIdRef.current = null;
+      activeGameDocRef.current = null;
+      activeMovesStateRef.current = { gameId: '', moves: [] };
       setActiveGameId(null);
       setActiveGameDoc(null);
       setActiveMovesState({ gameId: '', moves: [] });
       setActiveMessagesState({ gameId: '', messages: [] });
-      if (authUser) {
+      if (
+        authUser &&
+        staleGameId &&
+        settledGameIdsRef.current.has(staleGameId)
+      ) {
         void setPresence(authUser.uid, true, '').catch(() => {});
       }
     }
@@ -1241,240 +1565,272 @@ export function ChessApp() {
             onSwitchGoogleAccount={() => void handleLogout()}
             onClearError={() => setAuthError(null)}
           />
-        ) : (
-          <AnimatePresence mode="wait">
-            {viewMode === 'game' && activeGame ? (
-              <motion.div
-                key={`game-${activeGame.id}`}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.14 }}
-              >
-                {gameError && (
-                  <div className="max-w-[1160px] mx-auto px-4 sm:px-6 pt-3">
-                    <p className="text-xs text-red-200 bg-red-950/70 border border-red-500/40 rounded px-3 py-2">
-                      {gameError}
-                    </p>
-                  </div>
-                )}
-                <GameWorkspace
-                  game={activeGame}
-                  myUsername={profile.username}
-                  dict={dict}
-                  whiteTimeMs={whiteTimeMs}
-                  blackTimeMs={blackTimeMs}
-                  isBoardSynced={isBoardSynced}
-                  muted={muted}
-                  onToggleMute={handleToggleMute}
-                  onMove={handlePlayerMove}
-                  onSendChat={(text) => {
-                    if (!authUser) return;
-                    void sendPlayerChatAndMaybeBotReply(
-                      activeGame,
-                      authUser.uid,
-                      profile.username,
-                      text,
-                      activeLang
-                    ).catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                  onResign={() => {
-                    if (!authUser) return;
-                    const myColor: PieceColor =
-                      !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
-                    void resignGameInFirestore(
-                      activeGame,
-                      myColor,
-                      profile.username,
-                      authUser.uid
-                    ).catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                  onOfferDraw={() => {
-                    if (!authUser) return;
-                    const myColor: PieceColor =
-                      !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
-                    void offerDrawInFirestore(
-                      activeGame,
-                      myColor,
-                      profile.username,
-                      authUser.uid,
-                      activeLang
-                    ).catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                  onRespondDraw={(accept) => {
-                    if (!authUser) return;
-                    void respondDrawInFirestore(
-                      activeGame,
-                      accept,
-                      profile.username,
-                      authUser.uid,
-                      activeLang
-                    ).catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                  onRematch={() => {
-                    if (!authUser) return;
-                    const myColor: PieceColor =
-                      !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
-                    void requestOrAcceptRematchInFirestore(
-                      activeGame,
-                      myColor,
-                      authUser.uid,
-                      activeLang
-                    )
-                      .then((newId) => {
-                        if (newId) {
-                          setActiveGameId(newId);
-                          setViewMode('game');
-                          soundFX.playChallenge();
-                        }
-                      })
-                      .catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                  onBackToLobby={() => navigateToLobbyTab()}
-                  onOpenCoachStudio={() => {
-                    setCoachTargetGame(activeGame);
-                    setCoachTargetPgn(null);
-                    setCoachSessionKey((k) => k + 1);
-                    setViewMode('coach');
-                  }}
-                />
-              </motion.div>
-            ) : viewMode === 'coach' ? (
-              <motion.div
-                key={`coach-${coachSessionKey}`}
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.14 }}
-              >
-                <CoachReviewStudio
-                  myUsername={profile.username}
-                  myElo={profile.elo}
-                  lang={activeLang}
-                  initialGame={coachTargetGame}
-                  initialPgn={coachTargetPgn}
-                  savedReviews={savedReviews}
-                  onSaveReview={(review) => {
-                    if (!authUser) return;
-                    void saveGameReviewToFirestore(authUser.uid, review).catch((err: Error) =>
-                      setRuntimeFatalError(err)
-                    );
-                  }}
-                  onBackToLobby={() => navigateToLobbyTab()}
-                  onBackToGame={activeGame ? () => setViewMode('game') : undefined}
-                  onRequestOpenStats={() => setViewMode('stats')}
-                />
-              </motion.div>
-            ) : viewMode === 'stats' ? (
-              <motion.div
-                key="stats"
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.14 }}
-              >
-                <StatsDashboard
-                  profile={profile}
-                  reviews={savedReviews}
-                  onOpenReviewInCoach={(rev) => {
-                    setCoachTargetGame(null);
-                    setCoachTargetPgn({
-                      pgn: rev.pgn,
-                      playerColor: rev.playerColor,
-                      id: rev.id,
-                    });
-                    setCoachSessionKey((k) => k + 1);
-                    setViewMode('coach');
-                  }}
-                  onOpenImportPgn={() => {
-                    setCoachTargetGame(null);
-                    setCoachTargetPgn(null);
-                    setCoachSessionKey((k) => k + 1);
-                    setViewMode('coach');
-                  }}
-                  onBackToLobby={() => navigateToLobbyTab()}
-                />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="lobby"
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.14 }}
-              >
-                <LobbyView
-                  myProfile={profile}
-                  dict={dict}
-                  activeTab={lobbyTab}
-                  onTabChange={setLobbyTab}
-                  onlinePlayers={onlinePlayers}
-                  leaderboard={leaderboard}
-                  recentMatches={recentMatches}
-                  incomingChallenges={incomingChallenges}
-                  outgoingChallenges={outgoingChallenges}
-                  challengeError={challengeError}
-                  initialTargetUsername={inviteTarget}
-                  onSendChallenge={(toUsername, timeControl, colorPref) => {
-                    if (!authUser) return;
-                    setChallengeError(null);
-                    void sendChallengeToUser(
-                      profile,
-                      authUser.uid,
-                      toUsername,
-                      timeControl,
-                      colorPref
-                    )
-                      .then((res) => {
-                        if (!res.ok) setChallengeError(res.error);
-                      })
-                      .catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                  onCancelChallenge={(challengeId) => {
-                    void cancelPendingChallenge(challengeId).catch((err: Error) =>
-                      setRuntimeFatalError(err)
-                    );
-                  }}
-                  onRespondChallenge={(challengeId, accept) => {
-                    if (!authUser) return;
-                    setChallengeError(null);
-                    void respondToChallenge(challengeId, accept, authUser.uid)
-                      .then((res) => {
-                        if (!res.ok) {
-                          setChallengeError(res.error);
-                        } else if (res.gameId) {
-                          setActiveGameId(res.gameId);
-                          setViewMode('game');
-                          soundFX.playChallenge();
-                        }
-                      })
-                      .catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                  onStartBotGame={(
-                    botId: BotId,
-                    timeControl: TimeControlId,
-                    colorPref: ColorPref
-                  ) => {
-                    if (!authUser) return;
-                    void createBotGameInFirestore(
-                      profile,
-                      authUser.uid,
-                      botId,
-                      timeControl,
-                      colorPref,
-                      activeLang
-                    )
-                      .then((gameId) => {
-                        setActiveGameId(gameId);
-                        setViewMode('game');
+        ) : viewMode === 'game' ? (
+          activeGame ? (
+            <motion.div
+              key={`game-${activeGame.id}`}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.14 }}
+            >
+              {gameError && (
+                <div className="max-w-[1160px] mx-auto px-4 sm:px-6 pt-3">
+                  <p className="text-xs text-red-200 bg-red-950/70 border border-red-500/40 rounded px-3 py-2">
+                    {gameError}
+                  </p>
+                </div>
+              )}
+              <GameWorkspace
+                key={activeGame.id}
+                game={activeGame}
+                myUid={authUser?.uid}
+                myUsername={profile.username}
+                dict={dict}
+                whiteTimeMs={whiteTimeMs}
+                blackTimeMs={blackTimeMs}
+                isBoardSynced={isBoardSynced}
+                muted={muted}
+                onToggleMute={handleToggleMute}
+                onMove={handlePlayerMove}
+                onSendChat={(text) => {
+                  if (!authUser) return;
+                  void sendPlayerChatAndMaybeBotReply(
+                    activeGame,
+                    authUser.uid,
+                    profile.username,
+                    text,
+                    activeLang
+                  ).catch((err: Error) => setRuntimeFatalError(err));
+                }}
+                onResign={() => {
+                  if (!authUser) return;
+                  const myColor: PieceColor =
+                    !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
+                  void resignGameInFirestore(
+                    activeGame,
+                    myColor,
+                    profile.username,
+                    authUser.uid
+                  ).catch((err: Error) => setRuntimeFatalError(err));
+                }}
+                onOfferDraw={() => {
+                  if (!authUser) return;
+                  const myColor: PieceColor =
+                    !activeGame.white.isBot && activeGame.white.uid === authUser.uid ? 'w' : 'b';
+                  void offerDrawInFirestore(
+                    activeGame,
+                    myColor,
+                    profile.username,
+                    authUser.uid,
+                    activeLang
+                  ).catch((err: Error) => setRuntimeFatalError(err));
+                }}
+                onRespondDraw={(accept) => {
+                  if (!authUser) return;
+                  void respondDrawInFirestore(
+                    activeGame,
+                    accept,
+                    profile.username,
+                    authUser.uid,
+                    activeLang
+                  ).catch((err: Error) => setRuntimeFatalError(err));
+                }}
+                rematchPending={isRematchSubmitting}
+                onRematch={() => {
+                  if (!authUser) return;
+                  const targetGame = activeGame;
+                  if (rematchInFlightGameIdRef.current === targetGame.id) return;
+                  rematchInFlightGameIdRef.current = targetGame.id;
+                  setIsRematchSubmitting(true);
+                  setGameError(null);
+                  const myColor: PieceColor =
+                    !targetGame.white.isBot && targetGame.white.uid === authUser.uid ? 'w' : 'b';
+                  void requestOrAcceptRematchInFirestore(
+                    targetGame,
+                    myColor,
+                    authUser.uid,
+                    activeLang
+                  )
+                    .then((newId) => {
+                      if (newId) {
+                        openGameRoom(newId);
                         soundFX.playChallenge();
-                      })
-                      .catch((err: Error) => setRuntimeFatalError(err));
-                  }}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
+                      }
+                    })
+                    .catch((err: Error) => {
+                      console.error('Rematch warning:', err);
+                      let reason = '';
+                      try {
+                        const parsed = JSON.parse(err.message) as { error?: string; path?: string };
+                        if (parsed?.error) {
+                          reason = ` (${parsed.error.slice(0, 90)})`;
+                        }
+                      } catch {
+                        if (err?.message) {
+                          reason = ` (${err.message.slice(0, 90)})`;
+                        }
+                      }
+                      setGameError(`Impossibile avviare la rivincita al momento${reason}. Riprova.`);
+                      setTimeout(() => setGameError(null), 5000);
+                    })
+                    .finally(() => {
+                      if (rematchInFlightGameIdRef.current === targetGame.id) {
+                        rematchInFlightGameIdRef.current = null;
+                      }
+                      setIsRematchSubmitting(false);
+                    });
+                }}
+                onBackToLobby={() => navigateToLobbyTab()}
+                onOpenCoachStudio={() => {
+                  setCoachTargetGame(activeGame);
+                  setCoachTargetPgn(null);
+                  setCoachSessionKey((k) => k + 1);
+                  setViewMode('coach');
+                }}
+              />
+            </motion.div>
+          ) : (
+            <div className="max-w-[1160px] mx-auto px-4 sm:px-6 py-16 flex flex-col items-center justify-center gap-3 text-center">
+              <Loader2 className="w-7 h-7 animate-spin text-[#81B64C]" />
+              <p className="text-sm font-semibold text-[#DAD9D7]">{dict.connecting}</p>
+              <button
+                type="button"
+                onClick={() => navigateToLobbyTab()}
+                className="px-3.5 py-1.5 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-xs font-bold text-white"
+              >
+                {dict.lobby}
+              </button>
+            </div>
+          )
+        ) : viewMode === 'coach' ? (
+          <motion.div
+            key={`coach-${coachSessionKey}`}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.14 }}
+          >
+            <CoachReviewStudio
+              myUsername={profile.username}
+              myElo={profile.elo}
+              lang={activeLang}
+              initialGame={coachTargetGame}
+              initialPgn={coachTargetPgn}
+              savedReviews={savedReviews}
+              onSaveReview={(review) => {
+                if (!authUser) return;
+                void saveGameReviewToFirestore(authUser.uid, review).catch((err: Error) =>
+                  setRuntimeFatalError(err)
+                );
+              }}
+              onBackToLobby={() => navigateToLobbyTab()}
+              onBackToGame={activeGame ? () => setViewMode('game') : undefined}
+              onRequestOpenStats={() => setViewMode('stats')}
+            />
+          </motion.div>
+        ) : viewMode === 'stats' ? (
+          <motion.div
+            key="stats"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.14 }}
+          >
+            <StatsDashboard
+              profile={profile}
+              reviews={savedReviews}
+              onOpenReviewInCoach={(rev) => {
+                setCoachTargetGame(null);
+                setCoachTargetPgn({
+                  pgn: rev.pgn,
+                  playerColor: rev.playerColor,
+                  id: rev.id,
+                });
+                setCoachSessionKey((k) => k + 1);
+                setViewMode('coach');
+              }}
+              onOpenImportPgn={() => {
+                setCoachTargetGame(null);
+                setCoachTargetPgn(null);
+                setCoachSessionKey((k) => k + 1);
+                setViewMode('coach');
+              }}
+              onBackToLobby={() => navigateToLobbyTab()}
+            />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="lobby"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.14 }}
+          >
+            <LobbyView
+              myProfile={profile}
+              dict={dict}
+              activeTab={lobbyTab}
+              onTabChange={setLobbyTab}
+              onlinePlayers={onlinePlayers}
+              leaderboard={leaderboard}
+              recentMatches={recentMatches}
+              incomingChallenges={incomingChallenges}
+              outgoingChallenges={outgoingChallenges}
+              challengeError={challengeError}
+              initialTargetUsername={inviteTarget}
+              onSendChallenge={(toUsername, timeControl, colorPref) => {
+                if (!authUser) return;
+                setChallengeError(null);
+                void sendChallengeToUser(
+                  profile,
+                  authUser.uid,
+                  toUsername,
+                  timeControl,
+                  colorPref
+                )
+                  .then((res) => {
+                    if (!res.ok) setChallengeError(res.error);
+                  })
+                  .catch((err: Error) => setRuntimeFatalError(err));
+              }}
+              onCancelChallenge={(challengeId) => {
+                void cancelPendingChallenge(challengeId).catch((err: Error) =>
+                  setRuntimeFatalError(err)
+                );
+              }}
+              onRespondChallenge={(challengeId, accept) => {
+                if (!authUser) return;
+                setChallengeError(null);
+                void respondToChallenge(challengeId, accept, authUser.uid)
+                  .then((res) => {
+                    if (!res.ok) {
+                      setChallengeError(res.error);
+                    } else if (res.gameId) {
+                      openGameRoom(res.gameId);
+                      soundFX.playChallenge();
+                    }
+                  })
+                  .catch((err: Error) => setRuntimeFatalError(err));
+              }}
+              onStartBotGame={(
+                botId: BotId,
+                timeControl: TimeControlId,
+                colorPref: ColorPref
+              ) => {
+                if (!authUser) return;
+                void createBotGameInFirestore(
+                  profile,
+                  authUser.uid,
+                  botId,
+                  timeControl,
+                  colorPref,
+                  activeLang
+                )
+                  .then((gameId) => {
+                    openGameRoom(gameId);
+                    soundFX.playChallenge();
+                  })
+                  .catch((err: Error) => setRuntimeFatalError(err));
+              }}
+            />
+          </motion.div>
         )}
       </main>
 
@@ -1487,8 +1843,7 @@ export function ChessApp() {
             void respondToChallenge(incomingChallenges[0].id, true, authUser.uid)
               .then((res) => {
                 if (res.ok && res.gameId) {
-                  setActiveGameId(res.gameId);
-                  setViewMode('game');
+                  openGameRoom(res.gameId);
                   soundFX.playChallenge();
                 }
               })
