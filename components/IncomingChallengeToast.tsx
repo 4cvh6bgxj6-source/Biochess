@@ -2,13 +2,14 @@
 
 import React from 'react';
 import { Check, Swords, X } from 'lucide-react';
-import { TIME_CONTROLS, type Challenge } from '@/lib/types';
+import type { Challenge } from '@/lib/types';
 import { countryCodeToFlag } from '@/lib/world-languages';
-import type { UiDictionary } from '@/lib/i18n';
+import { getLocalizedTimeControl, getUiDict, type UiDictionary } from '@/lib/i18n';
 
 interface IncomingChallengeToastProps {
   challenge: Challenge;
   dict?: UiDictionary;
+  lang?: string;
   onAccept: () => void;
   onDecline: () => void;
 }
@@ -16,10 +17,13 @@ interface IncomingChallengeToastProps {
 export function IncomingChallengeToast({
   challenge,
   dict,
+  lang,
   onAccept,
   onDecline,
 }: IncomingChallengeToastProps) {
   const flag = countryCodeToFlag(challenge.fromCountry);
+  const d = dict || getUiDict(lang);
+  const tcLabel = getLocalizedTimeControl(challenge.timeControl, lang).label;
 
   return (
     <div
@@ -37,10 +41,12 @@ export function IncomingChallengeToast({
                 {flag}
               </span>
             )}
-            <span className="truncate">{challenge.from} ti sfida</span>
+            <span className="truncate">
+              {challenge.from} {d.challengesYou}
+            </span>
           </p>
           <p className="text-xs text-[#BABABA] mt-0.5">
-            {challenge.fromElo} ELO · {TIME_CONTROLS[challenge.timeControl].label}
+            {challenge.fromElo} ELO · {tcLabel}
           </p>
           <div className="flex items-center gap-2 mt-3">
             <button
@@ -49,7 +55,7 @@ export function IncomingChallengeToast({
               className="px-3.5 py-1.5 rounded bg-[#81B64C] hover:bg-[#95C85E] text-white text-xs font-bold border-b-2 border-[#5D8A32] inline-flex items-center gap-1 whitespace-nowrap"
             >
               <Check className="w-3.5 h-3.5" />
-              <span>{dict?.accept ?? 'Accetta'}</span>
+              <span>{d.accept}</span>
             </button>
             <button
               type="button"
@@ -57,7 +63,7 @@ export function IncomingChallengeToast({
               className="px-3 py-1.5 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-[#E5E4E2] text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap"
             >
               <X className="w-3.5 h-3.5" />
-              <span>{dict?.decline ?? 'Rifiuta'}</span>
+              <span>{d.decline}</span>
             </button>
           </div>
         </div>

@@ -31,6 +31,7 @@ import {
   gameStateToParsedInput,
   getMoveVariationOnDemand,
   parsePgnForAnalysis,
+  translateOpeningName,
   type AnalyzedMove,
   type CoachMoveClass,
   type FullGameAnalysis,
@@ -43,17 +44,20 @@ import {
   handleDeterministicCoachQuestion,
   type CoachNarrativeResponse,
 } from '@/lib/coach-engine';
+import { getUiDict, type UiDictionary } from '@/lib/i18n';
 import { soundFX } from '@/lib/sound';
 import { ChessBoard, type BoardArrow } from './ChessBoard';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
-const SAMPLE_PGN = `[Event "Partita Italiana - Esempio Didattico"]
-[White "Giocatore"]
-[Black "Avversario"]
+function buildSamplePgn(dict: UiDictionary): string {
+  return `[Event "BioChess"]
+[White "${dict.colorWhite}"]
+[Black "${dict.colorBlack}"]
 [Result "0-1"]
 
 1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. c3 Nf6 5. d4 exd4 6. cxd4 Bb4+ 7. Nc3 Nxe4 8. O-O Nxc3 9. bxc3 Bxc3 10. Qb3 Bxa1 11. Bxf7+ Kf8 12. Bg5 Ne7 13. Ne5 d5 14. Qf3 Bf5 15. Bxe7+ Qxe7 16. Qxf5 Qf6 17. Nd7+ Kxf7 18. Nxf6 gxf6 19. Qxd5+ Kg6 20. Rxa1 c6 0-1`;
+}
 
 interface CoachChatEntry {
   id: string;
@@ -108,60 +112,6 @@ function mapClassToBoardQuality(cls: CoachMoveClass): MoveQuality {
   return cls;
 }
 
-const CLASS_META: Record<
-  CoachMoveClass,
-  { symbol: string; label: string; colorClass: string; badgeBg: string }
-> = {
-  book: {
-    symbol: 'B',
-    label: 'Teoria',
-    colorClass: 'text-[#D2B088]',
-    badgeBg: 'bg-[#A88865]',
-  },
-  brilliant: {
-    symbol: '!!',
-    label: 'Brillante',
-    colorClass: 'text-[#26D0C9]',
-    badgeBg: 'bg-[#1BACA6]',
-  },
-  great: {
-    symbol: '!',
-    label: 'Ottima',
-    colorClass: 'text-[#7AB3E0]',
-    badgeBg: 'bg-[#5C8BB0]',
-  },
-  good: {
-    symbol: '✓',
-    label: 'Buona',
-    colorClass: 'text-[#9ED16A]',
-    badgeBg: 'bg-[#81B64C]',
-  },
-  inaccuracy: {
-    symbol: '?!',
-    label: 'Imprecisione',
-    colorClass: 'text-[#E7C666]',
-    badgeBg: 'bg-[#B69330]',
-  },
-  mistake: {
-    symbol: '?',
-    label: 'Errore',
-    colorClass: 'text-[#F5A84B]',
-    badgeBg: 'bg-[#E6912C]',
-  },
-  blunder: {
-    symbol: '??',
-    label: 'Blunder',
-    colorClass: 'text-[#F16562]',
-    badgeBg: 'bg-[#CA3431]',
-  },
-  missed_win: {
-    symbol: '✕',
-    label: 'Vittoria mancata',
-    colorClass: 'text-[#F59E0B]',
-    badgeBg: 'bg-[#D97706]',
-  },
-};
-
 function renderFormattedCoachText(text: string): React.ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, idx) => {
@@ -204,6 +154,63 @@ export function CoachReviewStudio({
   onBackToGame,
   onRequestOpenStats,
 }: CoachReviewStudioProps) {
+  const dict = useMemo(() => getUiDict(lang), [lang]);
+  const classMeta = useMemo<
+    Record<CoachMoveClass, { symbol: string; label: string; colorClass: string; badgeBg: string }>
+  >(
+    () => ({
+      book: {
+        symbol: 'B',
+        label: dict.mqBook,
+        colorClass: 'text-[#D2B088]',
+        badgeBg: 'bg-[#A88865]',
+      },
+      brilliant: {
+        symbol: '!!',
+        label: dict.mqBrilliant,
+        colorClass: 'text-[#26D0C9]',
+        badgeBg: 'bg-[#1BACA6]',
+      },
+      great: {
+        symbol: '!',
+        label: dict.mqGreat,
+        colorClass: 'text-[#7AB3E0]',
+        badgeBg: 'bg-[#5C8BB0]',
+      },
+      good: {
+        symbol: '✓',
+        label: dict.mqGood,
+        colorClass: 'text-[#9ED16A]',
+        badgeBg: 'bg-[#81B64C]',
+      },
+      inaccuracy: {
+        symbol: '?!',
+        label: dict.mqInaccuracy,
+        colorClass: 'text-[#E7C666]',
+        badgeBg: 'bg-[#B69330]',
+      },
+      mistake: {
+        symbol: '?',
+        label: dict.mqMistake,
+        colorClass: 'text-[#F5A84B]',
+        badgeBg: 'bg-[#E6912C]',
+      },
+      blunder: {
+        symbol: '??',
+        label: dict.mqBlunder,
+        colorClass: 'text-[#F16562]',
+        badgeBg: 'bg-[#CA3431]',
+      },
+      missed_win: {
+        symbol: '✕',
+        label: dict.mqMissedWin,
+        colorClass: 'text-[#F59E0B]',
+        badgeBg: 'bg-[#D97706]',
+      },
+    }),
+    [dict]
+  );
+
   const [pgnDraft, setPgnDraft] = useState('');
   const [pgnColor, setPgnColor] = useState<PieceColor>('w');
   const [pgnError, setPgnError] = useState<string | null>(null);
@@ -298,10 +305,14 @@ export function CoachReviewStudio({
       setRightTab('coach');
 
       try {
-        const result = await analyzeFullGameWithEngine(parsed, (done, total) => {
-          if (activeRunIdRef.current !== runId) return;
-          setProgress({ done, total });
-        });
+        const result = await analyzeFullGameWithEngine(
+          parsed,
+          (done, total) => {
+            if (activeRunIdRef.current !== runId) return;
+            setProgress({ done, total });
+          },
+          lang
+        );
         if (activeRunIdRef.current !== runId) return;
 
         setAnalysis(result);
@@ -309,16 +320,16 @@ export function CoachReviewStudio({
 
         onSaveReviewRef.current(analysisToSavedReview(result));
 
-        const debrief = generateOpeningDebrief(result, myElo);
+        const debrief = generateOpeningDebrief(result, myElo, lang);
         applyCoachResponse(result, debrief);
       } catch (err: unknown) {
         if (activeRunIdRef.current !== runId) return;
         setAnalyzing(false);
-        setPgnError(err instanceof Error ? err.message : 'Errore durante analisi partita.');
+        setPgnError(err instanceof Error ? err.message : dict.coachAnalysisError);
         setShowImportPanel(true);
       }
     },
-    [applyCoachResponse, myElo]
+    [applyCoachResponse, myElo, lang, dict.coachAnalysisError]
   );
 
   useEffect(() => {
@@ -326,7 +337,7 @@ export function CoachReviewStudio({
       const key = `game:${initialGame.id}:${initialGame.moves.length}`;
       if (autoLaunchedKeyRef.current === key) return;
       try {
-        const parsed = gameStateToParsedInput(initialGame, myUsername);
+        const parsed = gameStateToParsedInput(initialGame, myUsername, lang);
         const timer = setTimeout(() => {
           if (autoLaunchedKeyRef.current === key) return;
           autoLaunchedKeyRef.current = key;
@@ -335,7 +346,7 @@ export function CoachReviewStudio({
         return () => clearTimeout(timer);
       } catch (err) {
         console.error('[BioChess][Coach] Failed preparing game for analysis:', err);
-        setPgnError(err instanceof Error ? err.message : 'Errore durante la lettura della partita.');
+        setPgnError(err instanceof Error ? err.message : dict.coachReadGameError);
         setShowImportPanel(true);
         return;
       }
@@ -346,12 +357,12 @@ export function CoachReviewStudio({
       if (autoLaunchedKeyRef.current === key) return;
       let res: ReturnType<typeof parsePgnForAnalysis>;
       try {
-        res = parsePgnForAnalysis(initialPgn.pgn, initialPgn.playerColor, myUsername);
+        res = parsePgnForAnalysis(initialPgn.pgn, initialPgn.playerColor, myUsername, lang);
       } catch (err) {
         console.error('[BioChess][Coach] Failed parsing PGN in CoachReviewStudio:', err);
         res = {
           ok: false,
-          error: 'PGN non valido o illeggibile. Impossibile avviare la revisione.',
+          error: dict.coachInvalidPgnError,
         };
       }
       const timer = setTimeout(() => {
@@ -373,12 +384,12 @@ export function CoachReviewStudio({
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [initialGame, initialPgn, myUsername, runAnalysisPipeline]);
+  }, [initialGame, initialPgn, myUsername, lang, dict.coachInvalidPgnError, dict.coachReadGameError, runAnalysisPipeline]);
 
   function handleAnalyzePgnSubmit(e?: React.FormEvent) {
     if (e) e.preventDefault();
     setPgnError(null);
-    const res = parsePgnForAnalysis(pgnDraft, pgnColor, myUsername);
+    const res = parsePgnForAnalysis(pgnDraft, pgnColor, myUsername, lang);
     if (!res.ok) {
       setPgnError(res.error);
       return;
@@ -401,7 +412,7 @@ export function CoachReviewStudio({
 
   function handleReopenSavedReview(rev: SavedGameReview) {
     setPgnError(null);
-    const res = parsePgnForAnalysis(rev.pgn, rev.playerColor, myUsername);
+    const res = parsePgnForAnalysis(rev.pgn, rev.playerColor, myUsername, lang);
     if (!res.ok) {
       setPgnError(res.error);
       return;
@@ -635,7 +646,7 @@ export function CoachReviewStudio({
     setLastStudentAttempt(null);
     setVariation({
       basePly: move.ply,
-      label: `Variante migliore da ${move.moveNumber}${move.color === 'w' ? '.' : '...'}`,
+      label: `${dict.coachBestVariationFrom} ${move.moveNumber}${move.color === 'w' ? '.' : '...'}`,
       sans,
       fens,
       movesMeta,
@@ -675,11 +686,11 @@ export function CoachReviewStudio({
     const userMsg: CoachChatEntry = {
       id: `student_${Date.now()}`,
       role: 'student',
-      text: `Provo ${focusedMove.moveNumber}${focusedMove.color === 'w' ? '.' : '...'} ${evaluation.san}`,
+      text: `${dict.coachTryPrefix} ${focusedMove.moveNumber}${focusedMove.color === 'w' ? '.' : '...'} ${evaluation.san}`,
     };
     setChatEntries((prev) => [...prev, userMsg]);
 
-    const feedback = generateStudentMoveFeedback(focusedMove, evaluation, analysis, myElo);
+    const feedback = generateStudentMoveFeedback(focusedMove, evaluation, analysis, myElo, lang);
     applyCoachResponse(analysis, feedback, { preserveAttempt: true });
   }
 
@@ -697,17 +708,34 @@ export function CoachReviewStudio({
     setChatEntries((prev) => [...prev, studentEntry]);
 
     const lower = clean.toLowerCase();
-    if (lower.startsWith('mostra variante') && focusedMove) {
+    const isVariationAsk =
+      lower.startsWith(dict.coachShowVariationAsk.toLowerCase()) ||
+      lower.startsWith('mostra variante') ||
+      lower.startsWith('show line') ||
+      lower.startsWith('mostrar variante') ||
+      lower.startsWith('voir variante') ||
+      lower.startsWith('variante ') ||
+      lower.startsWith('показать вариант') ||
+      lower.startsWith('显示变化') ||
+      lower.startsWith('変化を表示') ||
+      lower.startsWith('변화수') ||
+      lower.startsWith('عرض التفريع') ||
+      lower.includes('show variation');
+
+    if (isVariationAsk && focusedMove) {
       startBestVariationPreview(focusedMove);
       const line = getMoveVariationOnDemand(focusedMove);
       const pvText = line.length > 0 ? line.join(' ') : focusedMove.bestMoveSan;
+      const moveRef = `${focusedMove.moveNumber}${focusedMove.color === 'w' ? '.' : '...'}`;
       setChatEntries((prev) => [
         ...prev,
         {
           id: `coach_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
           role: 'coach',
-          text: `Ecco sulla scacchiera la variante migliore da ${focusedMove.moveNumber}${focusedMove.color === 'w' ? '.' : '...'}: **${pvText}**. Usa le frecce sotto la scacchiera per scorrerla mossa per mossa.`,
-          suggestedReplies: ['Prossimo momento decisivo', 'Punti di forza e debolezza'],
+          text: dict.coachBestVariationReady
+            .replace('{move}', moveRef)
+            .replace('{pv}', pvText),
+          suggestedReplies: [dict.coachNextDecisiveChip, dict.coachStrengthsWeaknessesChip],
           focusPly: focusedMove.ply,
         },
       ]);
@@ -720,6 +748,7 @@ export function CoachReviewStudio({
       focusedPly,
       quizTargetPly,
       playerElo: myElo,
+      lang,
     });
     applyCoachResponse(analysis, reply);
   }
@@ -728,7 +757,7 @@ export function CoachReviewStudio({
     if (!analysis || !focusedMove) return;
     setRightTab('coach');
     handleSendChat(
-      `Spiegami la mossa ${focusedMove.moveNumber}${focusedMove.color === 'w' ? '.' : '...'} ${focusedMove.san}`
+      `${dict.coachExplainMoveAsk} ${focusedMove.moveNumber}${focusedMove.color === 'w' ? '.' : '...'} ${focusedMove.san}`
     );
   }
 
@@ -770,15 +799,15 @@ export function CoachReviewStudio({
               className="px-3 py-1.5 rounded bg-[#262421] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-[#DAD9D7] inline-flex items-center gap-1.5"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              <span>{analysis ? 'Torna alla Revisione' : 'Lobby'}</span>
+              <span>{analysis ? dict.coachBackToReview : dict.lobby}</span>
             </button>
             <div>
               <h1 className="text-xl font-extrabold text-white flex items-center gap-2">
                 <GraduationCap className="w-5 h-5 text-[#81B64C]" />
-                <span>Game Review Coach</span>
+                <span>{dict.coachTitle}</span>
               </h1>
               <p className="text-xs text-[#9E9D9A]">
-                Analisi completa mossa per mossa con motore scacchistico e spiegazione interattiva in stile Chess.com.
+                {dict.coachSubtitle}
               </p>
             </div>
           </div>
@@ -789,7 +818,7 @@ export function CoachReviewStudio({
             className="px-3.5 py-2 rounded bg-[#262421] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-[#DAD9D7] inline-flex items-center gap-1.5"
           >
             <TrendingUp className="w-3.5 h-3.5 text-[#81B64C]" />
-            <span>Statistiche Personali</span>
+            <span>{dict.coachPersonalStats}</span>
           </button>
         </div>
 
@@ -800,23 +829,23 @@ export function CoachReviewStudio({
             className="lg:col-span-7 bg-[#262421] border border-[#3C3A36] rounded-md p-5 space-y-4"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-sm font-extrabold text-white">Importa una partita tramite PGN</h2>
+              <h2 className="text-sm font-extrabold text-white">{dict.coachImportPgnTitle}</h2>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => {
-                    setPgnDraft(SAMPLE_PGN);
+                    setPgnDraft(buildSamplePgn(dict));
                     setPgnColor('w');
                     setPgnError(null);
                   }}
                   className="px-2.5 py-1 rounded bg-[#302E2B] hover:bg-[#3C3A36] text-[11px] font-bold text-[#DAD9D7] inline-flex items-center gap-1"
                 >
                   <Sparkles className="w-3 h-3 text-[#81B64C]" />
-                  <span>Carica esempio</span>
+                  <span>{dict.coachLoadExample}</span>
                 </button>
                 <label className="cursor-pointer px-2.5 py-1 rounded bg-[#302E2B] hover:bg-[#3C3A36] text-[11px] font-bold text-[#DAD9D7] inline-flex items-center gap-1">
                   <FileUp className="w-3 h-3 text-[#81B64C]" />
-                  <span>File .pgn</span>
+                  <span>{dict.coachFilePgn}</span>
                   <input
                     type="file"
                     accept=".pgn,.txt"
@@ -831,7 +860,7 @@ export function CoachReviewStudio({
               value={pgnDraft}
               onChange={(e) => setPgnDraft(e.target.value)}
               rows={9}
-              placeholder={'Incolla qui il testo PGN della partita...\nEs: 1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 ...'}
+              placeholder={dict.coachPgnPlaceholder}
               className="w-full rounded bg-[#21201D] border border-[#3C3A36] focus:border-[#81B64C] outline-none p-3 text-xs font-mono-tabular text-[#F3F3F2] placeholder:text-[#787672]"
             />
 
@@ -843,7 +872,7 @@ export function CoachReviewStudio({
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
               <div className="flex items-center gap-2 text-xs">
-                <span className="text-[#9E9D9A] font-semibold">Analizza dal lato:</span>
+                <span className="text-[#9E9D9A] font-semibold">{dict.coachAnalyzeSide}</span>
                 <button
                   type="button"
                   onClick={() => setPgnColor('w')}
@@ -853,7 +882,7 @@ export function CoachReviewStudio({
                       : 'bg-[#21201D] text-[#BABABA] border-[#3C3A36]'
                   }`}
                 >
-                  Bianco
+                  {dict.colorWhite}
                 </button>
                 <button
                   type="button"
@@ -864,7 +893,7 @@ export function CoachReviewStudio({
                       : 'bg-[#21201D] text-[#BABABA] border-[#3C3A36]'
                   }`}
                 >
-                  Nero
+                  {dict.colorBlack}
                 </button>
               </div>
 
@@ -873,7 +902,7 @@ export function CoachReviewStudio({
                 className="px-5 py-2.5 rounded bg-[#81B64C] hover:bg-[#95C85E] text-white text-xs font-extrabold border-b-2 border-[#5D8A32] inline-flex items-center gap-2"
               >
                 <GraduationCap className="w-4 h-4" />
-                <span>Avvia Revisione Coach</span>
+                <span>{dict.coachStartReviewBtn}</span>
               </button>
             </div>
           </form>
@@ -882,7 +911,7 @@ export function CoachReviewStudio({
           <div className="lg:col-span-5 bg-[#262421] border border-[#3C3A36] rounded-md overflow-hidden">
             <div className="px-4 py-3 bg-[#21201D] border-b border-[#3C3A36] flex items-center justify-between">
               <h2 className="text-xs font-extrabold uppercase tracking-wider text-[#BABABA]">
-                Partite Analizzate di Recente
+                {dict.coachRecentTitle}
               </h2>
               <span className="text-xs font-mono-tabular text-[#9E9D9A]">
                 {savedReviews.length}
@@ -892,8 +921,8 @@ export function CoachReviewStudio({
             <div className="divide-y divide-[#33302C] max-h-[380px] overflow-y-auto">
               {savedReviews.length === 0 ? (
                 <div className="p-6 text-center text-xs text-[#8B8987] space-y-2">
-                  <p>Nessuna partita ancora analizzata.</p>
-                  <p>Gioca una partita o importa un PGN a sinistra per iniziare la tua sessione con il Coach.</p>
+                  <p>{dict.coachNoSavedReviews}</p>
+                  <p>{dict.coachNoSavedReviewsHint}</p>
                 </div>
               ) : (
                 savedReviews.map((rev) => (
@@ -908,13 +937,13 @@ export function CoachReviewStudio({
                         {rev.whiteUsername} vs {rev.blackUsername}
                       </p>
                       <p className="text-[11px] text-[#9E9D9A] truncate mt-0.5">
-                        {rev.openingName} · {rev.movesCount} mosse
+                        {translateOpeningName(rev.openingName, lang)} · {rev.movesCount} {dict.movesWord}
                       </p>
                     </div>
                     <div className="text-right shrink-0 font-mono-tabular">
                       <p className="text-xs font-extrabold text-[#81B64C]">{rev.accuracyPct}%</p>
                       <p className="text-[10px] text-[#9E9D9A]">
-                        {rev.result === 'win' ? 'Vinta' : rev.result === 'loss' ? 'Persa' : 'Patta'}
+                        {rev.result === 'win' ? dict.statsWonLabel : rev.result === 'loss' ? dict.statsLostLabel : dict.statsDrawnLabel}
                       </p>
                     </div>
                   </button>
@@ -939,10 +968,10 @@ export function CoachReviewStudio({
           </div>
           <div>
             <h2 className="text-base font-extrabold text-white">
-              Analisi tattica e strategica della partita in corso...
+              {dict.coachAnalyzingTitle}
             </h2>
             <p className="text-xs text-[#9E9D9A] mt-1">
-              Il motore sta valutando tutte le mosse di entrambi i giocatori per preparare la revisione con il Coach.
+              {dict.coachAnalyzingDesc}
             </p>
           </div>
           <div className="w-full h-2.5 bg-[#21201D] rounded overflow-hidden border border-[#3C3A36]">
@@ -952,7 +981,10 @@ export function CoachReviewStudio({
             />
           </div>
           <p className="text-xs font-mono-tabular text-[#BABABA]">
-            Mossa {progress.done} di {progress.total || '?'} ({pct}%)
+            {dict.coachMoveProgress
+              .replace('{done}', String(progress.done))
+              .replace('{total}', String(progress.total || '?'))
+              .replace('{pct}', String(pct))}
           </p>
           <button
             type="button"
@@ -963,7 +995,7 @@ export function CoachReviewStudio({
             }}
             className="px-3 py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[11px] font-bold text-[#DAD9D7]"
           >
-            Annulla · Importa PGN
+            {dict.coachCancelImport}
           </button>
         </div>
       </div>
@@ -990,7 +1022,7 @@ export function CoachReviewStudio({
             className="px-3 py-1.5 rounded bg-[#262421] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-[#DAD9D7] inline-flex items-center gap-1.5"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Lobby</span>
+            <span>{dict.lobby}</span>
           </button>
           {onBackToGame && (
             <button
@@ -998,11 +1030,11 @@ export function CoachReviewStudio({
               onClick={onBackToGame}
               className="px-3 py-1.5 rounded bg-[#262421] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-[#DAD9D7]"
             >
-              Torna alla partita
+              {dict.coachBackToGame}
             </button>
           )}
           <span className="text-xs text-[#9E9D9A] font-medium pl-1">
-            {analysis.openingEco} · {analysis.openingName} · {analysis.resultLabel}
+            {analysis.openingEco} · {translateOpeningName(analysis.openingName, lang)} · {analysis.resultLabel}
           </span>
         </div>
 
@@ -1013,7 +1045,7 @@ export function CoachReviewStudio({
             className="px-3 py-1.5 rounded bg-[#262421] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-[#DAD9D7] inline-flex items-center gap-1.5"
           >
             <Upload className="w-3.5 h-3.5 text-[#81B64C]" />
-            <span>Importa PGN</span>
+            <span>{dict.coachImportPgnBtn}</span>
           </button>
           <button
             type="button"
@@ -1021,7 +1053,7 @@ export function CoachReviewStudio({
             className="px-3 py-1.5 rounded bg-[#262421] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-[#DAD9D7] inline-flex items-center gap-1.5"
           >
             <TrendingUp className="w-3.5 h-3.5 text-[#81B64C]" />
-            <span>Statistiche</span>
+            <span>{dict.coachStatsBtn}</span>
           </button>
         </div>
       </div>
@@ -1074,11 +1106,11 @@ export function CoachReviewStudio({
                   />
                   <span className="font-bold text-white truncate">{topUsername}</span>
                   {topColor === analysis.playerColor && (
-                    <span className="text-[10px] font-bold text-[#81B64C]">(Tu)</span>
+                    <span className="text-[10px] font-bold text-[#81B64C]">({dict.youTag})</span>
                   )}
                 </div>
                 <span className="font-mono-tabular text-xs font-extrabold text-[#DAD9D7]">
-                  Precisione {topStats.accuracyPct}%
+                  {dict.accuracyLabel} {topStats.accuracyPct}%
                 </span>
               </div>
 
@@ -1091,6 +1123,7 @@ export function CoachReviewStudio({
                 playerColor={isQuizActive && focusedMove ? focusedMove.color : null}
                 lastMove={boardView.lastMove}
                 arrows={boardView.arrows}
+                lang={lang}
                 onMove={handleStudentQuizMove}
               />
 
@@ -1104,11 +1137,11 @@ export function CoachReviewStudio({
                   />
                   <span className="font-bold text-white truncate">{bottomUsername}</span>
                   {bottomColor === analysis.playerColor && (
-                    <span className="text-[10px] font-bold text-[#81B64C]">(Tu)</span>
+                    <span className="text-[10px] font-bold text-[#81B64C]">({dict.youTag})</span>
                   )}
                 </div>
                 <span className="font-mono-tabular text-xs font-extrabold text-[#81B64C]">
-                  Precisione {bottomStats.accuracyPct}%
+                  {dict.accuracyLabel} {bottomStats.accuracyPct}%
                 </span>
               </div>
             </div>
@@ -1162,7 +1195,7 @@ export function CoachReviewStudio({
                     onClick={() => setVariation(null)}
                     className="px-2.5 py-1 rounded bg-[#3C3A36] hover:bg-[#4B4843] text-[11px] font-bold text-white"
                   >
-                    Esci variante
+                    {dict.coachExitVariation}
                   </button>
                 </div>
               </>
@@ -1172,7 +1205,7 @@ export function CoachReviewStudio({
                   <button
                     type="button"
                     onClick={() => jumpToPly(0, 'before_move')}
-                    aria-label="Inizio"
+                    aria-label={dict.navFirst}
                     className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36]"
                   >
                     <ChevronFirst className="w-4 h-4" />
@@ -1187,7 +1220,7 @@ export function CoachReviewStudio({
                       }
                     }}
                     disabled={focusedPly === 0 && boardState === 'before_move'}
-                    aria-label="Indietro"
+                    aria-label={dict.navPrev}
                     className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
                   >
                     <ChevronLeft className="w-4 h-4" />
@@ -1204,7 +1237,7 @@ export function CoachReviewStudio({
                     disabled={
                       focusedPly >= analysis.moves.length - 1 && boardState === 'after_move'
                     }
-                    aria-label="Avanti"
+                    aria-label={dict.navNext}
                     className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
                   >
                     <ChevronRight className="w-4 h-4" />
@@ -1212,7 +1245,7 @@ export function CoachReviewStudio({
                   <button
                     type="button"
                     onClick={() => jumpToPly(analysis.moves.length - 1, 'after_move')}
-                    aria-label="Fine"
+                    aria-label={dict.navLast}
                     className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36]"
                   >
                     <ChevronLast className="w-4 h-4" />
@@ -1220,7 +1253,7 @@ export function CoachReviewStudio({
                   <button
                     type="button"
                     onClick={() => setFlipped((f) => !f)}
-                    aria-label="Capovolgi"
+                    aria-label={dict.flipBoard}
                     className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36]"
                   >
                     <RotateCcw className="w-4 h-4" />
@@ -1235,7 +1268,7 @@ export function CoachReviewStudio({
                       className="px-2.5 py-1 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#81B64C]/50 text-[11px] font-bold text-[#81B64C] inline-flex items-center gap-1"
                     >
                       <Play className="w-3 h-3" />
-                      <span>Mostra variante ({focusedMove.bestMoveSan})</span>
+                      <span>{dict.coachShowVariation} ({focusedMove.bestMoveSan})</span>
                     </button>
                   )}
                   {focusedMove && (
@@ -1245,7 +1278,7 @@ export function CoachReviewStudio({
                       className="px-2.5 py-1 rounded bg-[#81B64C] hover:bg-[#95C85E] text-[11px] font-extrabold text-white inline-flex items-center gap-1"
                     >
                       <MessageSquare className="w-3 h-3" />
-                      <span>Chiedi al Coach</span>
+                      <span>{dict.coachAskCoach}</span>
                     </button>
                   )}
                 </div>
@@ -1268,7 +1301,7 @@ export function CoachReviewStudio({
               }`}
             >
               <GraduationCap className="w-3.5 h-3.5 text-[#81B64C]" />
-              <span>Coach</span>
+              <span>{dict.coachTabCoach}</span>
             </button>
             <button
               type="button"
@@ -1280,7 +1313,7 @@ export function CoachReviewStudio({
               }`}
             >
               <BookOpen className="w-3.5 h-3.5 text-[#D2B088]" />
-              <span>Mosse ({analysis.moves.length})</span>
+              <span>{dict.coachTabMoves} ({analysis.moves.length})</span>
             </button>
             <button
               type="button"
@@ -1292,7 +1325,7 @@ export function CoachReviewStudio({
               }`}
             >
               <Target className="w-3.5 h-3.5 text-[#E6912C]" />
-              <span>Riepilogo</span>
+              <span>{dict.coachTabSummary}</span>
             </button>
           </div>
 
@@ -1305,10 +1338,10 @@ export function CoachReviewStudio({
                   <div className="flex items-center gap-2 min-w-0">
                     <span
                       className={`w-6 h-6 rounded-full inline-flex items-center justify-center text-[11px] font-extrabold text-white shrink-0 ${
-                        CLASS_META[focusedMove.classification].badgeBg
+                        classMeta[focusedMove.classification].badgeBg
                       }`}
                     >
-                      {CLASS_META[focusedMove.classification].symbol}
+                      {classMeta[focusedMove.classification].symbol}
                     </span>
                     <div className="min-w-0">
                       <p className="text-xs font-bold text-white truncate">
@@ -1316,15 +1349,15 @@ export function CoachReviewStudio({
                           {focusedMove.moveNumber}
                           {focusedMove.color === 'w' ? '.' : '...'} {focusedMove.san}
                         </span>
-                        <span className={CLASS_META[focusedMove.classification].colorClass}>
-                          {CLASS_META[focusedMove.classification].label}
+                        <span className={classMeta[focusedMove.classification].colorClass}>
+                          {classMeta[focusedMove.classification].label}
                         </span>
                       </p>
                       <p className="text-[11px] text-[#9E9D9A] truncate">
                         {isQuizActive
-                          ? 'Trova la mossa migliore sulla scacchiera!'
+                          ? dict.coachFindBestMove
                           : focusedMove.bestMoveSan !== focusedMove.san
-                            ? `Migliore: ${focusedMove.bestMoveSan} (${focusedMove.bestPvSan.slice(0, 3).join(' ')})`
+                            ? `${dict.coachBestPrefix} ${focusedMove.bestMoveSan} (${focusedMove.bestPvSan.slice(0, 3).join(' ')})`
                             : focusedMove.tacticalNote}
                       </p>
                     </div>
@@ -1342,14 +1375,14 @@ export function CoachReviewStudio({
                 <div className="px-3.5 py-2 bg-[#2B3424] border-b border-[#81B64C]/50 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs text-[#E8F3DC] font-semibold">
                     <HelpCircle className="w-4 h-4 text-[#81B64C] shrink-0" />
-                    <span>Muovi un pezzo sulla scacchiera per rispondere al Coach</span>
+                    <span>{dict.coachQuizPrompt}</span>
                   </div>
                   <button
                     type="button"
-                    onClick={() => handleSendChat('Mostrami la soluzione migliore e spiegami perché.')}
+                    onClick={() => handleSendChat(dict.coachShowSolutionAsk)}
                     className="px-2 py-1 rounded bg-[#21201D] hover:bg-[#3C3A36] text-[11px] font-bold text-[#81B64C] shrink-0"
                   >
-                    Mostra soluzione
+                    {dict.coachShowSolution}
                   </button>
                 </div>
               )}
@@ -1379,7 +1412,7 @@ export function CoachReviewStudio({
                             <GraduationCap className="w-3.5 h-3.5" />
                             Coach
                           </span>
-                          {typeof entry.focusPly === 'number' &&
+                            {typeof entry.focusPly === 'number' &&
                             analysis.moves[entry.focusPly] && (
                               <button
                                 type="button"
@@ -1388,7 +1421,7 @@ export function CoachReviewStudio({
                                 }
                                 className="text-[10px] font-mono-tabular text-[#BABABA] hover:text-white underline"
                               >
-                                Posizione {analysis.moves[entry.focusPly].moveNumber}
+                                {dict.coachPositionWord} {analysis.moves[entry.focusPly].moveNumber}
                                 {analysis.moves[entry.focusPly].color === 'w' ? '.' : '...'}
                               </button>
                             )}
@@ -1433,14 +1466,14 @@ export function CoachReviewStudio({
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="Rispondi o fai una domanda al Coach..."
+                  placeholder={dict.coachChatPlaceholder}
                   className="flex-1 bg-[#302E2B] border border-[#3C3A36] focus:border-[#81B64C] outline-none rounded px-3 py-2 text-xs text-white placeholder:text-[#787672]"
                 />
                 <button
                   type="submit"
                   disabled={!chatInput.trim()}
                   className="px-3 py-2 rounded bg-[#81B64C] hover:bg-[#95C85E] disabled:opacity-40 text-white"
-                  aria-label="Invia"
+                  aria-label={dict.coachSendAria}
                 >
                   <Send className="w-4 h-4" />
                 </button>
@@ -1455,11 +1488,11 @@ export function CoachReviewStudio({
               {analysis.decisiveMoments.length > 0 && (
                 <div className="p-3 bg-[#21201D] border-b border-[#3C3A36] space-y-2">
                   <h3 className="text-[11px] font-extrabold uppercase tracking-wider text-[#9E9D9A]">
-                    Momenti Decisivi ({analysis.decisiveMoments.length})
+                    {dict.coachDecisiveMoments} ({analysis.decisiveMoments.length})
                   </h3>
                   <div className="space-y-1.5">
                     {analysis.decisiveMoments.map((m) => {
-                      const meta = CLASS_META[m.classification];
+                      const meta = classMeta[m.classification];
                       return (
                         <button
                           key={m.ply}
@@ -1518,10 +1551,10 @@ export function CoachReviewStudio({
                         <span className="truncate">{pair.white.san}</span>
                         <span
                           className={`text-[10px] font-extrabold ${
-                            CLASS_META[pair.white.classification].colorClass
+                            classMeta[pair.white.classification].colorClass
                           }`}
                         >
-                          {CLASS_META[pair.white.classification].symbol}
+                          {classMeta[pair.white.classification].symbol}
                         </span>
                       </button>
                     )}
@@ -1538,10 +1571,10 @@ export function CoachReviewStudio({
                         <span className="truncate">{pair.black.san}</span>
                         <span
                           className={`text-[10px] font-extrabold ${
-                            CLASS_META[pair.black.classification].colorClass
+                            classMeta[pair.black.classification].colorClass
                           }`}
                         >
-                          {CLASS_META[pair.black.classification].symbol}
+                          {classMeta[pair.black.classification].symbol}
                         </span>
                       </button>
                     )}
@@ -1558,7 +1591,7 @@ export function CoachReviewStudio({
               <div className="grid grid-cols-2 gap-3">
                 <div className="bg-[#21201D] border border-[#81B64C]/50 rounded p-3.5 text-center">
                   <p className="text-[11px] font-bold text-[#9E9D9A] truncate">
-                    Tu ({analysis.playerColor === 'w' ? analysis.whiteUsername : analysis.blackUsername})
+                    {dict.youTag} ({analysis.playerColor === 'w' ? analysis.whiteUsername : analysis.blackUsername})
                   </p>
                   <p className="text-2xl font-extrabold text-[#81B64C] font-mono-tabular mt-1">
                     {mySideStats.accuracyPct}%
@@ -1577,13 +1610,13 @@ export function CoachReviewStudio({
               {/* Phase Breakdown */}
               <div className="bg-[#21201D] border border-[#3C3A36] rounded p-3.5 space-y-2.5">
                 <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#BABABA]">
-                  Precisione per Fase (Tu)
+                  {dict.coachPhaseAccuracyTitle}
                 </h3>
                 {(
                   [
-                    ['Apertura', mySideStats.openingAcc],
-                    ['Mediogioco', mySideStats.middlegameAcc],
-                    ['Finale', mySideStats.endgameAcc],
+                    [dict.phaseOpening, mySideStats.openingAcc],
+                    [dict.phaseMiddlegame, mySideStats.middlegameAcc],
+                    [dict.phaseEndgame, mySideStats.endgameAcc],
                   ] as const
                 ).map(([label, val]) => (
                   <div key={label} className="space-y-1">
@@ -1604,24 +1637,24 @@ export function CoachReviewStudio({
               {/* Classification Breakdown Both Sides */}
               <div className="bg-[#21201D] border border-[#3C3A36] rounded overflow-hidden">
                 <div className="grid grid-cols-3 px-3.5 py-2 border-b border-[#3C3A36] text-[11px] font-extrabold text-[#9E9D9A]">
-                  <span>Categoria</span>
-                  <span className="text-center">Bianco</span>
-                  <span className="text-center">Nero</span>
+                  <span>{dict.coachCategoryCol}</span>
+                  <span className="text-center">{dict.colorWhite}</span>
+                  <span className="text-center">{dict.colorBlack}</span>
                 </div>
                 <div className="divide-y divide-[#2E2C28] text-xs font-mono-tabular">
                   {(
                     [
-                      ['Brillanti (!!)', 'brilliant', analysis.whiteStats.brilliant, analysis.blackStats.brilliant],
-                      ['Ottime (!)', 'great', analysis.whiteStats.great, analysis.blackStats.great],
-                      ['Buone (✓)', 'good', analysis.whiteStats.good, analysis.blackStats.good],
-                      ['Teoria (B)', 'book', analysis.whiteStats.book, analysis.blackStats.book],
-                      ['Imprecisioni (?!) ', 'inaccuracy', analysis.whiteStats.inaccuracy, analysis.blackStats.inaccuracy],
-                      ['Errori (?)', 'mistake', analysis.whiteStats.mistake, analysis.blackStats.mistake],
-                      ['Blunder (??)', 'blunder', analysis.whiteStats.blunder, analysis.blackStats.blunder],
+                      [`${dict.mqBrilliant} (!!)`, 'brilliant', analysis.whiteStats.brilliant, analysis.blackStats.brilliant],
+                      [`${dict.mqGreat} (!)`, 'great', analysis.whiteStats.great, analysis.blackStats.great],
+                      [`${dict.mqGood} (✓)`, 'good', analysis.whiteStats.good, analysis.blackStats.good],
+                      [`${dict.mqBook} (B)`, 'book', analysis.whiteStats.book, analysis.blackStats.book],
+                      [`${dict.mqInaccuracy} (?!)`, 'inaccuracy', analysis.whiteStats.inaccuracy, analysis.blackStats.inaccuracy],
+                      [`${dict.mqMistake} (?)`, 'mistake', analysis.whiteStats.mistake, analysis.blackStats.mistake],
+                      [`${dict.mqBlunder} (??)`, 'blunder', analysis.whiteStats.blunder, analysis.blackStats.blunder],
                       ...(analysis.whiteStats.missedWin > 0 || analysis.blackStats.missedWin > 0
                         ? ([
                             [
-                              'Vittorie mancate (✕)',
+                              `${dict.mqMissedWin} (✕)`,
                               'missed_win',
                               analysis.whiteStats.missedWin,
                               analysis.blackStats.missedWin,
@@ -1631,7 +1664,7 @@ export function CoachReviewStudio({
                     ] as Array<[string, CoachMoveClass, number, number]>
                   ).map(([label, cls, wVal, bVal]) => (
                     <div key={label} className="grid grid-cols-3 px-3.5 py-2 items-center">
-                      <span className={`font-sans font-semibold ${CLASS_META[cls].colorClass}`}>
+                      <span className={`font-sans font-semibold ${classMeta[cls].colorClass}`}>
                         {label}
                       </span>
                       <span className="text-center font-bold text-white">{wVal}</span>
@@ -1647,7 +1680,7 @@ export function CoachReviewStudio({
                 className="w-full py-2.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-white inline-flex items-center justify-center gap-2"
               >
                 <TrendingUp className="w-4 h-4 text-[#81B64C]" />
-                <span>Apri Statistiche e Progressi Personali</span>
+                <span>{dict.coachOpenFullStatsBtn}</span>
               </button>
             </div>
           )}

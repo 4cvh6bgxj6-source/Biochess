@@ -3,6 +3,7 @@ import type { Move, PieceSymbol } from 'chess.js';
 import type { GameState, PieceColor, SavedGameReview } from './types';
 import { searchPositionWithPv, type EnginePvResult } from './fast-chess-engine';
 import { classifyMoveUnified, UNIFIED_EVAL_CONFIG } from './chess-bot';
+import { normalizeUiLang, type SupportedUiLang } from './i18n';
 
 export type CoachMoveClass =
   | 'book'
@@ -148,7 +149,441 @@ const OPENING_BOOK_CATALOG: OpeningEntry[] = [
   { eco: 'D00', name: 'Apertura di Pedone di Donna', line: ['d4'] },
 ];
 
-export function detectOpeningFromSans(sans: string[]): { eco: string; name: string } {
+const OPENING_NAMES_BY_IT: Record<string, Partial<Record<SupportedUiLang, string>>> = {
+  'Caro-Kann: Alien Gambit': {
+    en: 'Caro-Kann: Alien Gambit',
+  },
+  'Partita Italiana (Giuoco Piano)': {
+    en: 'Italian Game (Giuoco Piano)',
+    es: 'Apertura Italiana (Giuoco Piano)',
+    fr: 'Partie Italienne (Giuoco Piano)',
+    de: 'Italienische Partie (Giuoco Piano)',
+    pt: 'Abertura Italiana (Giuoco Piano)',
+    ru: 'Итальянская партия',
+    zh: '意大利开局',
+    ja: 'イタリアン・ゲーム',
+    ko: '이탈리안 게임',
+    ar: 'الافتتاح الإيطالي',
+  },
+  'Partita Italiana: Difesa dei Due Cavalli': {
+    en: 'Italian Game: Two Knights Defense',
+    es: 'Italiana: Defensa de los Dos Caballos',
+    fr: 'Italienne : Défense des Deux Cavaliers',
+    de: 'Italienisch: Zweispringerspiel',
+    pt: 'Italiana: Defesa dos Dois Cavalos',
+    ru: 'Итальянская: Защита двух коней',
+    zh: '意大利开局：双马防御',
+    ja: 'イタリアン：トゥーナイツ・ディフェンス',
+    ko: '이탈리안: 투 나이츠 디펜스',
+    ar: 'الإيطالي: دفاع الحصانين',
+  },
+  'Partita Italiana': {
+    en: 'Italian Game',
+    es: 'Apertura Italiana',
+    fr: 'Partie Italienne',
+    de: 'Italienische Partie',
+    pt: 'Abertura Italiana',
+    ru: 'Итальянская партия',
+    zh: '意大利开局',
+    ja: 'イタリアン・ゲーム',
+    ko: '이탈리안 게임',
+    ar: 'الافتتاح الإيطالي',
+  },
+  'Partita Spagnola (Ruy Lopez)': {
+    en: 'Ruy Lopez (Spanish Opening)',
+    es: 'Apertura Española (Ruy López)',
+    fr: 'Partie Espagnole (Ruy Lopez)',
+    de: 'Spanische Partie (Ruy Lopez)',
+    pt: 'Abertura Espanhola (Ruy Lopez)',
+    ru: 'Испанская партия',
+    zh: '西班牙开局',
+    ja: 'ルイ・ロペス',
+    ko: '루이 로페즈',
+    ar: 'الافتتاح الإسباني (روي لوبيز)',
+  },
+  'Partita Scozzese': {
+    en: 'Scotch Game',
+    es: 'Apertura Escocesa',
+    fr: 'Partie Écossaise',
+    de: 'Schottische Partie',
+    pt: 'Abertura Escocesa',
+    ru: 'Шотландская партия',
+    zh: '苏格兰开局',
+    ja: 'スコッチ・ゲーム',
+    ko: '스카치 게임',
+    ar: 'الافتتاح الاسكتلندي',
+  },
+  'Partita dei Quattro Cavalli': {
+    en: 'Four Knights Game',
+    es: 'Apertura de los Cuatro Caballos',
+    fr: 'Partie des Quatre Cavaliers',
+    de: 'Vierspringerspiel',
+    pt: 'Abertura dos Quatro Cavalos',
+    ru: 'Дебют четырёх коней',
+    zh: '四马开局',
+    ja: 'フォー・ナイツ・ゲーム',
+    ko: '포 나이츠 게임',
+    ar: 'افتتاح الأحصنة الأربعة',
+  },
+  'Difesa Petrov (Stafford Gambit)': {
+    en: "Petrov's Defense (Stafford Gambit)",
+    es: 'Defensa Petrov (Gambito Stafford)',
+    fr: 'Défense Petrov (Gambit Stafford)',
+    de: 'Russische Verteidigung (Stafford-Gambit)',
+    pt: 'Defesa Petrov (Gambito Stafford)',
+    ru: 'Русская партия (Гамбит Стаффорда)',
+    zh: '彼得罗夫防御（斯塔福德弃兵）',
+    ja: 'ペトロフ・ディフェンス (スタッフォード・ギャンビット)',
+    ko: '페트로프 디펜스 (스태포드 갬빗)',
+    ar: 'دفاع بتروف (غامبيت ستافورد)',
+  },
+  'Difesa Petrov (Russa)': {
+    en: "Petrov's Defense",
+    es: 'Defensa Petrov',
+    fr: 'Défense Petrov',
+    de: 'Russische Verteidigung',
+    pt: 'Defesa Petrov',
+    ru: 'Русская партия',
+    zh: '彼得罗夫防御',
+    ja: 'ペトロフ・ディフェンス',
+    ko: '페트로프 디펜스',
+    ar: 'دفاع بتروف',
+  },
+  'Difesa Philidor': {
+    en: 'Philidor Defense',
+    es: 'Defensa Philidor',
+    fr: 'Défense Philidor',
+    de: 'Philidor-Verteidigung',
+    pt: 'Defesa Philidor',
+    ru: 'Защита Филидора',
+    zh: '菲利多尔防御',
+    ja: 'フィリドール・ディフェンス',
+    ko: '필리도어 디펜스',
+    ar: 'دفاع فيليدور',
+  },
+  'Partita Viennese': {
+    en: 'Vienna Game',
+    es: 'Apertura Vienesa',
+    fr: 'Partie Viennoise',
+    de: 'Wiener Partie',
+    pt: 'Abertura Vienense',
+    ru: 'Венская партия',
+    zh: '维也纳开局',
+    ja: 'ウィーン・ゲーム',
+    ko: '비엔나 게임',
+    ar: 'افتتاح فيينا',
+  },
+  'Gambetto di Re': {
+    en: "King's Gambit",
+    es: 'Gambito de Rey',
+    fr: 'Gambit du Roi',
+    de: 'Königsgambit',
+    pt: 'Gambito do Rei',
+    ru: 'Королевский гамбит',
+    zh: '王翼弃兵',
+    ja: 'キングズ・ギャンビット',
+    ko: '킹스 갬빗',
+    ar: 'غامبيت الملك',
+  },
+  'Difesa Siciliana: Drago / Najdorf': {
+    en: 'Sicilian Defense: Dragon / Najdorf',
+    es: 'Defensa Siciliana: Dragón / Najdorf',
+    fr: 'Défense Sicilienne : Dragon / Najdorf',
+    de: 'Sizilianisch: Drache / Najdorf',
+    pt: 'Defesa Siciliana: Dragão / Najdorf',
+    ru: 'Сицилианская: Дракон / Найдорф',
+    zh: '西西里防御：龙式 / 纳道夫',
+    ja: 'シシリアン：ドラゴン / ナイドルフ',
+    ko: '시실리안: 드래곤 / 나이도르프',
+    ar: 'الدفاع الصقلي: التنين / نايدورف',
+  },
+  'Difesa Siciliana: Chiusa': {
+    en: 'Closed Sicilian Defense',
+    es: 'Siciliana Cerrada',
+    fr: 'Sicilienne Fermée',
+    de: 'Geschlossener Sizilianer',
+    pt: 'Siciliana Fechada',
+    ru: 'Закрытая сицилианская',
+    zh: '封闭式西西里防御',
+    ja: 'クローズド・シシリアン',
+    ko: '클로즈드 시실리안',
+    ar: 'الصقلي المغلق',
+  },
+  'Difesa Siciliana': {
+    en: 'Sicilian Defense',
+    es: 'Defensa Siciliana',
+    fr: 'Défense Sicilienne',
+    de: 'Sizilianische Verteidigung',
+    pt: 'Defesa Siciliana',
+    ru: 'Сицилианская защита',
+    zh: '西西里防御',
+    ja: 'シシリアン・ディフェンス',
+    ko: '시실리안 디펜스',
+    ar: 'الدفاع الصقلي',
+  },
+  'Difesa Francese: Variante di Spinta': {
+    en: 'French Defense: Advance Variation',
+    es: 'Defensa Francesa: Variante de Avance',
+    fr: 'Défense Française : Variante d’Avance',
+    de: 'Französisch: Vorstoßvariante',
+    pt: 'Defesa Francesa: Variante do Avanço',
+    ru: 'Французская: Вариант с продвижением',
+    zh: '法兰西防御：推进变例',
+    ja: 'フレンチ：アドバンス・バリエーション',
+    ko: '프렌치: 어드밴스 바리에이션',
+    ar: 'الدفاع الفرنسي: تفريع التقدم',
+  },
+  'Difesa Francese': {
+    en: 'French Defense',
+    es: 'Defensa Francesa',
+    fr: 'Défense Française',
+    de: 'Französische Verteidigung',
+    pt: 'Defesa Francesa',
+    ru: 'Французская защита',
+    zh: '法兰西防御',
+    ja: 'フレンチ・ディフェンス',
+    ko: '프렌치 디펜스',
+    ar: 'الدفاع الفرنسي',
+  },
+  'Difesa Caro-Kann': {
+    en: 'Caro-Kann Defense',
+    es: 'Defensa Caro-Kann',
+    fr: 'Défense Caro-Kann',
+    de: 'Caro-Kann-Verteidigung',
+    pt: 'Defesa Caro-Kann',
+    ru: 'Защита Каро-Канн',
+    zh: '卡罗-康防御',
+    ja: 'カロ・カン・ディフェンス',
+    ko: '카로-칸 디펜스',
+    ar: 'دفاع كارو-كان',
+  },
+  'Difesa Scandinava': {
+    en: 'Scandinavian Defense',
+    es: 'Defensa Escandinava',
+    fr: 'Défense Scandinave',
+    de: 'Skandinavische Verteidigung',
+    pt: 'Defesa Escandinava',
+    ru: 'Скандинавская защита',
+    zh: '斯堪的纳维亚防御',
+    ja: 'スカンジナビアン・ディフェンス',
+    ko: '스칸디나비안 디펜스',
+    ar: 'الدفاع الإسكندنافي',
+  },
+  'Difesa Pirc': {
+    en: 'Pirc Defense',
+    es: 'Defensa Pirc',
+    fr: 'Défense Pirc',
+    de: 'Pirc-Verteidigung',
+    pt: 'Defesa Pirc',
+    ru: 'Защита Пирца-Уфимцева',
+    zh: '皮尔茨防御',
+    ja: 'ピルツ・ディフェンス',
+    ko: '피르츠 디펜스',
+    ar: 'دفاع بيرتس',
+  },
+  'Difesa Alekhine': {
+    en: "Alekhine's Defense",
+    es: 'Defensa Alekhine',
+    fr: 'Défense Alekhine',
+    de: 'Aljechin-Verteidigung',
+    pt: 'Defesa Alekhine',
+    ru: 'Защита Алехина',
+    zh: '阿廖欣防御',
+    ja: 'アリョーヒン・ディフェンス',
+    ko: '알레힌 디펜스',
+    ar: 'دفاع أليخين',
+  },
+  'Gambetto di Donna Rifiutato': {
+    en: "Queen's Gambit Declined",
+    es: 'Gambito de Dama Rehusado',
+    fr: 'Gambit Dame Refusé',
+    de: 'Abgelehntes Damengambit',
+    pt: 'Gambito da Dama Recusado',
+    ru: 'Отказанный ферзевый гамбит',
+    zh: '拒后翼弃兵',
+    ja: 'クイーンズ・ギャンビット・ディクラインド',
+    ko: '퀸즈 갬빗 디클라인드',
+    ar: 'غامبيت الوزير المرفوض',
+  },
+  'Difesa Slava': {
+    en: 'Slav Defense',
+    es: 'Defensa Eslava',
+    fr: 'Défense Slave',
+    de: 'Slawische Verteidigung',
+    pt: 'Defesa Eslava',
+    ru: 'Славянская защита',
+    zh: '斯拉夫防御',
+    ja: 'スラブ・ディフェンス',
+    ko: '슬라브 디펜스',
+    ar: 'الدفاع السلافي',
+  },
+  'Gambetto di Donna Accettato': {
+    en: "Queen's Gambit Accepted",
+    es: 'Gambito de Dama Aceptado',
+    fr: 'Gambit Dame Accepté',
+    de: 'Angenommenes Damengambit',
+    pt: 'Gambito da Dama Aceito',
+    ru: 'Принятый ферзевый гамбит',
+    zh: '接受后翼弃兵',
+    ja: 'クイーンズ・ギャンビット・アクセプテッド',
+    ko: '퀸즈 갬빗 억셉티드',
+    ar: 'غامبيت الوزير المقبول',
+  },
+  'Gambetto di Donna': {
+    en: "Queen's Gambit",
+    es: 'Gambito de Dama',
+    fr: 'Gambit Dame',
+    de: 'Damengambit',
+    pt: 'Gambito da Dama',
+    ru: 'Ферзевый гамбит',
+    zh: '后翼弃兵',
+    ja: 'クイーンズ・ギャンビット',
+    ko: '퀸즈 갬빗',
+    ar: 'غامبيت الوزير',
+  },
+  'Sistema Londra': {
+    en: 'London System',
+    es: 'Sistema Londres',
+    fr: 'Système de Londres',
+    de: 'Londoner System',
+    pt: 'Sistema Londres',
+    ru: 'Лондонская система',
+    zh: '伦敦体系',
+    ja: 'ロンドン・システム',
+    ko: '런던 시스템',
+    ar: 'نظام لندن',
+  },
+  'Gambetto Englund': {
+    en: 'Englund Gambit',
+    es: 'Gambito Englund',
+    fr: 'Gambit Englund',
+    de: 'Englund-Gambit',
+    pt: 'Gambito Englund',
+    ru: 'Гамбит Энглунда',
+    zh: '英格伦德弃兵',
+    ja: 'エングルンド・ギャンビット',
+    ko: '잉글런드 갬빗',
+    ar: 'غامبيت إنجلوند',
+  },
+  'Difesa Nimzo-Indiana': {
+    en: 'Nimzo-Indian Defense',
+    es: 'Defensa Nimzoindia',
+    fr: 'Défense Nimzo-Indienne',
+    de: 'Nimzo-Indische Verteidigung',
+    pt: 'Defesa Nimzo-Índia',
+    ru: 'Защита Нимцовича',
+    zh: '尼姆佐-印度防御',
+    ja: 'ニムゾ・インディアン',
+    ko: '님조-인디언 디펜스',
+    ar: 'الدفاع النمزو-هندي',
+  },
+  'Difesa Est-Indiana': {
+    en: "King's Indian Defense",
+    es: 'Defensa India de Rey',
+    fr: 'Défense Est-Indienne',
+    de: 'Königsindische Verteidigung',
+    pt: 'Defesa Índia do Rei',
+    ru: 'Староиндийская защита',
+    zh: '王翼印度防御',
+    ja: 'キングズ・インディアン',
+    ko: '킹즈 인디언 디펜스',
+    ar: 'الدفاع الهندي الملكي',
+  },
+  'Difesa Indiana': {
+    en: 'Indian Defense',
+    es: 'Defensa India',
+    fr: 'Défense Indienne',
+    de: 'Indische Verteidigung',
+    pt: 'Defesa Índia',
+    ru: 'Индийская защита',
+    zh: '印度防御',
+    ja: 'インディアン・ディフェンス',
+    ko: '인디언 디펜스',
+    ar: 'الدفاع الهندي',
+  },
+  'Apertura Inglese': {
+    en: 'English Opening',
+    es: 'Apertura Inglesa',
+    fr: 'Ouverture Anglaise',
+    de: 'Englische Eröffnung',
+    pt: 'Abertura Inglesa',
+    ru: 'Английское начало',
+    zh: '英国式开局',
+    ja: 'イングリッシュ・オープニング',
+    ko: '잉글리시 오프닝',
+    ar: 'الافتتاح الإنجليزي',
+  },
+  'Apertura Reti': {
+    en: 'Réti Opening',
+    es: 'Apertura Réti',
+    fr: 'Ouverture Réti',
+    de: 'Réti-Eröffnung',
+    pt: 'Abertura Réti',
+    ru: 'Дебют Рети',
+    zh: '雷蒂开局',
+    ja: 'レティ・オープニング',
+    ko: '레티 오프닝',
+    ar: 'افتتاح ريتي',
+  },
+  'Apertura Zukertort / Reti': {
+    en: 'Zukertort / Réti Opening',
+    es: 'Apertura Zukertort / Réti',
+    fr: 'Ouverture Zukertort / Réti',
+    de: 'Zukertort- / Réti-Eröffnung',
+    pt: 'Abertura Zukertort / Réti',
+    ru: 'Дебют Цукерторта / Рети',
+    zh: '祖克托特 / 雷蒂开局',
+    ja: 'ズカートート / レティ',
+    ko: '주커토르트 / 레티',
+    ar: 'افتتاح زوكيرتورت / ريتي',
+  },
+  'Apertura di Pedone di Re': {
+    en: "King's Pawn Opening",
+    es: 'Apertura de Peón de Rey',
+    fr: 'Ouverture du Pion Roi',
+    de: 'Königsbauern-Eröffnung',
+    pt: 'Abertura do Peão do Rei',
+    ru: 'Дебют королевской пешки',
+    zh: '王前兵开局',
+    ja: 'キングズ・ポーン・オープニング',
+    ko: '킹즈 폰 오프닝',
+    ar: 'افتتاح بيدق الملك',
+  },
+  'Apertura di Pedone di Donna': {
+    en: "Queen's Pawn Opening",
+    es: 'Apertura de Peón de Dama',
+    fr: 'Ouverture du Pion Dame',
+    de: 'Damenbauern-Eröffnung',
+    pt: 'Abertura do Peão da Dama',
+    ru: 'Дебют ферзевой пешки',
+    zh: '后前兵开局',
+    ja: 'クイーンズ・ポーン・オープニング',
+    ko: '퀸즈 폰 오프닝',
+    ar: 'افتتاح بيدق الوزير',
+  },
+  'Apertura Libera': {
+    en: 'Unclassified Opening',
+    es: 'Apertura Libre',
+    fr: 'Ouverture Libre',
+    de: 'Freie Eröffnung',
+    pt: 'Abertura Livre',
+    ru: 'Свободный дебют',
+    zh: '自由开局',
+    ja: '自由戦型',
+    ko: '자유 오프닝',
+    ar: 'افتتاح حر',
+  },
+};
+
+export function translateOpeningName(name: string, lang?: string): string {
+  const code = normalizeUiLang(lang);
+  if (code === 'it') return name;
+  const entry = OPENING_NAMES_BY_IT[name];
+  if (!entry) return name;
+  return entry[code] || entry.en || name;
+}
+
+export function detectOpeningFromSans(sans: string[], lang?: string): { eco: string; name: string } {
   let bestMatch: OpeningEntry | null = null;
   for (const entry of OPENING_BOOK_CATALOG) {
     if (sans.length < entry.line.length) continue;
@@ -163,9 +598,11 @@ export function detectOpeningFromSans(sans: string[]): { eco: string; name: stri
       bestMatch = entry;
     }
   }
-  return bestMatch
-    ? { eco: bestMatch.eco, name: bestMatch.name }
-    : { eco: 'A00', name: 'Apertura Libera' };
+  const rawName = bestMatch ? bestMatch.name : 'Apertura Libera';
+  return {
+    eco: bestMatch ? bestMatch.eco : 'A00',
+    name: translateOpeningName(rawName, lang),
+  };
 }
 
 function pvUciToSan(fen: string, pv: Array<{ from: string; to: string; promo?: string }>): string[] {
@@ -237,6 +674,7 @@ function buildTacticalNote(params: {
   mateAfter?: number;
   bestPvSan: string[];
   playedPvSan: string[];
+  lang?: string;
 }): string {
   const {
     color,
@@ -250,44 +688,219 @@ function buildTacticalNote(params: {
     mateAfter,
     bestPvSan,
     playedPvSan,
+    lang,
   } = params;
 
+  const code = normalizeUiLang(lang);
   const moverSign = color === 'w' ? 1 : -1;
   const mateBeforeForMover = mateBefore ? mateBefore * moverSign : undefined;
   const mateAfterForMover = mateAfter ? mateAfter * moverSign : undefined;
+  const lossStr = (cpLoss / 100).toFixed(1);
+  const bestPv = bestPvSan.slice(0, 3).join(' ');
+  const playedPv = playedPvSan.slice(0, 3).join(' ');
+  const evalAfterStr = (evalAfterMoverCp / 100).toFixed(1);
+  const evalBeforeStr = (evalBeforeMoverCp / 100).toFixed(1);
 
-  if (san.includes('#')) return 'Scacco matto decisivo.';
+  if (code === 'it') {
+    if (san.includes('#')) return 'Scacco matto decisivo.';
+    if (mateAfterForMover !== undefined && mateAfterForMover < 0) {
+      return `Permette uno scacco matto forzato in ${Math.abs(mateAfterForMover)} mosse (${playedPv}).`;
+    }
+    if (mateBeforeForMover !== undefined && mateBeforeForMover > 0 && (!mateAfterForMover || mateAfterForMover < 0)) {
+      return `Manca un matto forzato in ${mateBeforeForMover} con ${bestMoveSan}.`;
+    }
+    if (classification === 'brilliant') {
+      return `Sacrificio spettacolare (${san}) che mantiene la valutazione vincente.`;
+    }
+    if (classification === 'great') {
+      return `Unica mossa precisa (${san}) che conserva il vantaggio critico.`;
+    }
+    if (classification === 'missed_win') {
+      return `Occasione vincente mancata: ${bestMoveSan} (${bestPv}) dava un vantaggio netto (~+${evalBeforeStr}).`;
+    }
+    if (classification === 'blunder') {
+      const seq = playedPv ? ` L'avversario risponde con ${playedPv}.` : '';
+      return `Errore grave (-${lossStr} pedoni): invece di ${san}, bisognava giocare ${bestMoveSan} (${bestPv}).${seq}`;
+    }
+    if (classification === 'mistake') {
+      return `Errore (-${lossStr} pedoni): ${bestMoveSan} (${bestPv}) era nettamente migliore (valutazione ${evalAfterStr}).`;
+    }
+    if (classification === 'inaccuracy') {
+      return `Imprecisione: ${bestMoveSan} manteneva maggiore controllo.`;
+    }
+    if (classification === 'book') {
+      return 'Mossa teorica di apertura.';
+    }
+    return 'Mossa solida e coerente con la posizione.';
+  }
+
+  const packs: Record<
+    Exclude<SupportedUiLang, 'it'>,
+    {
+      mate: string;
+      allowsMate: (n: number) => string;
+      missedMate: (n: number) => string;
+      brilliant: string;
+      great: string;
+      missedWin: string;
+      blunder: (seq: string) => string;
+      mistake: string;
+      inaccuracy: string;
+      book: string;
+      good: string;
+    }
+  > = {
+    en: {
+      mate: 'Decisive checkmate.',
+      allowsMate: (n) => `Allows a forced checkmate in ${n} moves (${playedPv}).`,
+      missedMate: (n) => `Misses a forced mate in ${n} with ${bestMoveSan}.`,
+      brilliant: `Spectacular sacrifice (${san}) that keeps a winning evaluation.`,
+      great: `Only accurate move (${san}) preserving the critical advantage.`,
+      missedWin: `Missed winning chance: ${bestMoveSan} (${bestPv}) gave a clear edge (~+${evalBeforeStr}).`,
+      blunder: (seq) => `Blunder (-${lossStr} pawns): instead of ${san}, ${bestMoveSan} (${bestPv}) was needed.${seq}`,
+      mistake: `Mistake (-${lossStr} pawns): ${bestMoveSan} (${bestPv}) was much stronger (eval ${evalAfterStr}).`,
+      inaccuracy: `Inaccuracy: ${bestMoveSan} kept tighter control.`,
+      book: 'Opening theory move.',
+      good: 'Solid move consistent with the position.',
+    },
+    es: {
+      mate: 'Jaque mate decisivo.',
+      allowsMate: (n) => `Permite jaque mate forzado en ${n} jugadas (${playedPv}).`,
+      missedMate: (n) => `Omite mate forzado en ${n} con ${bestMoveSan}.`,
+      brilliant: `Sacrificio brillante (${san}) que mantiene una ventaja ganadora.`,
+      great: `Única jugada precisa (${san}) que conserva la ventaja clave.`,
+      missedWin: `Victoria perdida: ${bestMoveSan} (${bestPv}) daba ventaja clara (~+${evalBeforeStr}).`,
+      blunder: (seq) => `Error grave (-${lossStr} peones): en vez de ${san}, había que jugar ${bestMoveSan} (${bestPv}).${seq}`,
+      mistake: `Error (-${lossStr} peones): ${bestMoveSan} (${bestPv}) era muy superior (eval ${evalAfterStr}).`,
+      inaccuracy: `Imprecisión: ${bestMoveSan} mantenía mayor control.`,
+      book: 'Jugada teórica de apertura.',
+      good: 'Jugada sólida y coherente con la posición.',
+    },
+    fr: {
+      mate: 'Échec et mat décisif.',
+      allowsMate: (n) => `Permet un mat forcé en ${n} coups (${playedPv}).`,
+      missedMate: (n) => `Manque un mat forcé en ${n} avec ${bestMoveSan}.`,
+      brilliant: `Sacrifice brillant (${san}) qui maintient un avantage gagnant.`,
+      great: `Seul coup précis (${san}) préservant l’avantage critique.`,
+      missedWin: `Gain manqué : ${bestMoveSan} (${bestPv}) donnait un net avantage (~+${evalBeforeStr}).`,
+      blunder: (seq) => `Gaffe (-${lossStr} pions) : au lieu de ${san}, il fallait jouer ${bestMoveSan} (${bestPv}).${seq}`,
+      mistake: `Erreur (-${lossStr} pions) : ${bestMoveSan} (${bestPv}) était nettement meilleur (éval ${evalAfterStr}).`,
+      inaccuracy: `Imprécision : ${bestMoveSan} gardait plus de contrôle.`,
+      book: 'Coup théorique d’ouverture.',
+      good: 'Coup solide cohérent avec la position.',
+    },
+    de: {
+      mate: 'Entscheidendes Schachmatt.',
+      allowsMate: (n) => `Ermöglicht erzwungenes Matt in ${n} Zügen (${playedPv}).`,
+      missedMate: (n) => `Verpasst Matt in ${n} mit ${bestMoveSan}.`,
+      brilliant: `Spektakuläres Opfer (${san}) mit klarer Gewinnstellung.`,
+      great: `Einziger genauer Zug (${san}), der den Vorteil wahrt.`,
+      missedWin: `Gewinn verpasst: ${bestMoveSan} (${bestPv}) gab klaren Vorteil (~+${evalBeforeStr}).`,
+      blunder: (seq) => `Patzer (-${lossStr} Bauern): statt ${san} war ${bestMoveSan} (${bestPv}) nötig.${seq}`,
+      mistake: `Fehler (-${lossStr} Bauern): ${bestMoveSan} (${bestPv}) war deutlich stärker (Bew. ${evalAfterStr}).`,
+      inaccuracy: `Ungenauigkeit: ${bestMoveSan} hielt mehr Kontrolle.`,
+      book: 'Theoriezug in der Eröffnung.',
+      good: 'Solider, zur Stellung passender Zug.',
+    },
+    pt: {
+      mate: 'Xeque-mate decisivo.',
+      allowsMate: (n) => `Permite mate forçado em ${n} lances (${playedPv}).`,
+      missedMate: (n) => `Perde mate forçado em ${n} com ${bestMoveSan}.`,
+      brilliant: `Sacrifício brilhante (${san}) mantendo avaliação vencedora.`,
+      great: `Único lance preciso (${san}) preservando a vantagem crítica.`,
+      missedWin: `Vitória perdida: ${bestMoveSan} (${bestPv}) dava vantagem clara (~+${evalBeforeStr}).`,
+      blunder: (seq) => `Erro grave (-${lossStr} peões): em vez de ${san}, jogue ${bestMoveSan} (${bestPv}).${seq}`,
+      mistake: `Erro (-${lossStr} peões): ${bestMoveSan} (${bestPv}) era bem melhor (aval. ${evalAfterStr}).`,
+      inaccuracy: `Imprecisão: ${bestMoveSan} mantinha maior controle.`,
+      book: 'Lance teórico de abertura.',
+      good: 'Lance sólido e coerente com a posição.',
+    },
+    ru: {
+      mate: 'Решающий мат.',
+      allowsMate: (n) => `Допускает форсированный мат в ${n} х. (${playedPv}).`,
+      missedMate: (n) => `Упущен мат в ${n} ходов ходом ${bestMoveSan}.`,
+      brilliant: `Блестящая жертва (${san}) с сохранением выигрыша.`,
+      great: `Единственный точный ход (${san}), сохраняющий перевес.`,
+      missedWin: `Упущенная победа: ${bestMoveSan} (${bestPv}) давал перевес (~+${evalBeforeStr}).`,
+      blunder: (seq) => `Зевок (-${lossStr} пешки): вместо ${san} следовало ${bestMoveSan} (${bestPv}).${seq}`,
+      mistake: `Ошибка (-${lossStr} пешки): ${bestMoveSan} (${bestPv}) сильнее (оценка ${evalAfterStr}).`,
+      inaccuracy: `Неточность: ${bestMoveSan} давал больше контроля.`,
+      book: 'Теоретический дебютный ход.',
+      good: 'Надёжный позиционный ход.',
+    },
+    zh: {
+      mate: '决定性将杀。',
+      allowsMate: (n) => `允许对手在 ${n} 步内强制将杀 (${playedPv})。`,
+      missedMate: (n) => `错失 ${bestMoveSan} 的 ${n} 步强制将杀。`,
+      brilliant: `精彩弃子 (${san})，保持胜势。`,
+      great: `唯一精确着法 (${san})，守住关键优势。`,
+      missedWin: `错失胜机：${bestMoveSan} (${bestPv}) 可获得明显优势 (~+${evalBeforeStr})。`,
+      blunder: (seq) => `大漏着 (-${lossStr} 兵)：应走 ${bestMoveSan} (${bestPv}) 而非 ${san}。${seq}`,
+      mistake: `失误 (-${lossStr} 兵)：${bestMoveSan} (${bestPv}) 明显更佳（评估 ${evalAfterStr}）。`,
+      inaccuracy: `不精确：${bestMoveSan} 控制力更强。`,
+      book: '开局定式着法。',
+      good: '稳健且合理的着法。',
+    },
+    ja: {
+      mate: '決定的なチェックメイト。',
+      allowsMate: (n) => `${n} 手詰みを許します (${playedPv})。`,
+      missedMate: (n) => `${bestMoveSan} による ${n} 手詰みを逃しました。`,
+      brilliant: `勝勢を保つ見事なサクリファイス (${san})。`,
+      great: `重要な優位を保つ唯一の好手 (${san})。`,
+      missedWin: `勝ち逃し：${bestMoveSan} (${bestPv}) で明確な優位でした (~+${evalBeforeStr})。`,
+      blunder: (seq) => `大悪手 (-${lossStr} ポーン)：${san} ではなく ${bestMoveSan} (${bestPv}) が必要でした。${seq}`,
+      mistake: `悪手 (-${lossStr} ポーン)：${bestMoveSan} (${bestPv}) の方が有力でした (評価 ${evalAfterStr})。`,
+      inaccuracy: `疑問手：${bestMoveSan} で主導権を維持できました。`,
+      book: '定跡手。',
+      good: '局面に合った堅実な手。',
+    },
+    ko: {
+      mate: '결정적인 체크메이트.',
+      allowsMate: (n) => `${n}수 강제 메이트를 허용합니다 (${playedPv}).`,
+      missedMate: (n) => `${bestMoveSan}로 ${n}수 메이트를 놓쳤습니다.`,
+      brilliant: `승세를 유지하는 멋진 희생 (${san}).`,
+      great: `핵심 우위를 지키는 유일한 정확한 수 (${san}).`,
+      missedWin: `승리 놓침: ${bestMoveSan} (${bestPv})가 유리했습니다 (~+${evalBeforeStr}).`,
+      blunder: (seq) => `대실수 (-${lossStr} 폰): ${san} 대신 ${bestMoveSan} (${bestPv})가 필요했습니다.${seq}`,
+      mistake: `실수 (-${lossStr} 폰): ${bestMoveSan} (${bestPv})가 훨씬 좋았습니다 (평가 ${evalAfterStr}).`,
+      inaccuracy: `부정확: ${bestMoveSan}가 더 안정적이었습니다.`,
+      book: '오프닝 이론 수.',
+      good: '포지션에 어울리는 탄탄한 수.',
+    },
+    ar: {
+      mate: 'كش مات حاسم.',
+      allowsMate: (n) => `يسمح بكش مات إجباري خلال ${n} نقلات (${playedPv}).`,
+      missedMate: (n) => `يُضيّع كش مات خلال ${n} نقلات عبر ${bestMoveSan}.`,
+      brilliant: `تضحية رائعة (${san}) تحافظ على الأفضلية الحاسمة.`,
+      great: `النقلة الدقيقة الوحيدة (${san}) للحفاظ على الأفضلية.`,
+      missedWin: `فرصة فوز ضائعة: ${bestMoveSan} (${bestPv}) كان يمنح أفضلية واضحة (~+${evalBeforeStr}).`,
+      blunder: (seq) => `خطأ فادح (-${lossStr} بيادق): بدلاً من ${san} كان يجب لعب ${bestMoveSan} (${bestPv}).${seq}`,
+      mistake: `خطأ (-${lossStr} بيادق): ${bestMoveSan} (${bestPv}) أفضل بكثير (تقييم ${evalAfterStr}).`,
+      inaccuracy: `عدم دقة: ${bestMoveSan} يحافظ على سيطرة أكبر.`,
+      book: 'نقلة افتتاحية نظرية.',
+      good: 'نقلة متماسكة متوافقة مع الوضعية.',
+    },
+  };
+
+  const p = packs[code] || packs.en;
+  if (san.includes('#')) return p.mate;
   if (mateAfterForMover !== undefined && mateAfterForMover < 0) {
-    return `Permette uno scacco matto forzato in ${Math.abs(mateAfterForMover)} mosse (${playedPvSan.slice(0, 3).join(' ')}).`;
+    return p.allowsMate(Math.abs(mateAfterForMover));
   }
   if (mateBeforeForMover !== undefined && mateBeforeForMover > 0 && (!mateAfterForMover || mateAfterForMover < 0)) {
-    return `Manca un matto forzato in ${mateBeforeForMover} con ${bestMoveSan}.`;
+    return p.missedMate(mateBeforeForMover);
   }
-  if (classification === 'brilliant') {
-    return `Sacrificio spettacolare (${san}) che mantiene la valutazione vincente.`;
-  }
-  if (classification === 'great') {
-    return `Unica mossa precisa (${san}) che conserva il vantaggio critico.`;
-  }
-  if (classification === 'missed_win') {
-    return `Occasione vincente mancata: ${bestMoveSan} (${bestPvSan.slice(0, 3).join(' ')}) dava un vantaggio netto (~+${(evalBeforeMoverCp / 100).toFixed(1)}).`;
-  }
+  if (classification === 'brilliant') return p.brilliant;
+  if (classification === 'great') return p.great;
+  if (classification === 'missed_win') return p.missedWin;
   if (classification === 'blunder') {
-    const lossStr = (cpLoss / 100).toFixed(1);
-    const seq = playedPvSan.length > 0 ? ` L'avversario risponde con ${playedPvSan.slice(0, 3).join(' ')}.` : '';
-    return `Errore grave (-${lossStr} pedoni): invece di ${san}, bisognava giocare ${bestMoveSan} (${bestPvSan.slice(0, 3).join(' ')}).${seq}`;
+    const seq = playedPv ? ` (${playedPv})` : '';
+    return p.blunder(seq);
   }
-  if (classification === 'mistake') {
-    const lossStr = (cpLoss / 100).toFixed(1);
-    return `Errore (-${lossStr} pedoni): ${bestMoveSan} (${bestPvSan.slice(0, 3).join(' ')}) era nettamente migliore (valutazione ${(evalAfterMoverCp / 100).toFixed(1)}).`;
-  }
-  if (classification === 'inaccuracy') {
-    return `Imprecisione: ${bestMoveSan} manteneva maggiore controllo.`;
-  }
-  if (classification === 'book') {
-    return 'Mossa teorica di apertura.';
-  }
-  return 'Mossa solida e coerente con la posizione.';
+  if (classification === 'mistake') return p.mistake;
+  if (classification === 'inaccuracy') return p.inaccuracy;
+  if (classification === 'book') return p.book;
+  return p.good;
 }
 
 function summarizeSide(moves: AnalyzedMove[], color: PieceColor): PlayerSideSummary {
@@ -359,11 +972,58 @@ export interface ParsedGameInput {
 export function parsePgnForAnalysis(
   pgnText: string,
   preferredColor: PieceColor = 'w',
-  myUsername?: string
+  myUsername?: string,
+  lang?: string
 ): { ok: true; parsed: ParsedGameInput } | { ok: false; error: string } {
+  const code = normalizeUiLang(lang);
+  const msgPack = {
+    it: {
+      empty: 'Incolla un PGN valido prima di avviare l’analisi.',
+      invalid: 'PGN non valido o illeggibile. Verifica le mosse algebriche (es. 1. e4 e5 2. Nf3 Nc6).',
+      noMoves: 'Il PGN non contiene alcuna mossa da analizzare.',
+      white: 'Bianco',
+      black: 'Nero',
+    },
+    en: {
+      empty: 'Paste a valid PGN before starting the analysis.',
+      invalid: 'Invalid or unreadable PGN. Check algebraic moves (e.g. 1. e4 e5 2. Nf3 Nc6).',
+      noMoves: 'The PGN does not contain any moves to analyze.',
+      white: 'White',
+      black: 'Black',
+    },
+    es: {
+      empty: 'Pega un PGN válido antes de iniciar el análisis.',
+      invalid: 'PGN inválido o ilegible. Verifica las jugadas (ej. 1. e4 e5 2. Nf3 Nc6).',
+      noMoves: 'El PGN no contiene jugadas para analizar.',
+      white: 'Blancas',
+      black: 'Negras',
+    },
+    fr: {
+      empty: 'Collez un PGN valide avant de lancer l’analyse.',
+      invalid: 'PGN invalide ou illisible. Vérifiez les coups (ex. 1. e4 e5 2. Nf3 Nc6).',
+      noMoves: 'Le PGN ne contient aucun coup à analyser.',
+      white: 'Blancs',
+      black: 'Noirs',
+    },
+    de: {
+      empty: 'Bitte ein gültiges PGN vor der Analyse einfügen.',
+      invalid: 'Ungültiges oder unlesbares PGN (z. B. 1. e4 e5 2. Nf3 Nc6).',
+      noMoves: 'Das PGN enthält keine Züge.',
+      white: 'Weiß',
+      black: 'Schwarz',
+    },
+    pt: {
+      empty: 'Cole um PGN válido antes de iniciar a análise.',
+      invalid: 'PGN inválido ou ilegível (ex. 1. e4 e5 2. Nf3 Nc6).',
+      noMoves: 'O PGN não contém lances para analisar.',
+      white: 'Brancas',
+      black: 'Pretas',
+    },
+  }[code === 'it' || code === 'en' || code === 'es' || code === 'fr' || code === 'de' || code === 'pt' ? code : 'en'];
+
   const cleaned = pgnText.trim();
   if (!cleaned) {
-    return { ok: false, error: 'Incolla un PGN valido prima di avviare l’analisi.' };
+    return { ok: false, error: msgPack.empty };
   }
 
   const chess = new Chess();
@@ -372,18 +1032,18 @@ export function parsePgnForAnalysis(
   } catch {
     return {
       ok: false,
-      error: 'PGN non valido o illeggibile. Verifica le mosse algebriche (es. 1. e4 e5 2. Nf3 Nc6).',
+      error: msgPack.invalid,
     };
   }
 
   const history = chess.history({ verbose: true }) as Move[];
   if (history.length === 0) {
-    return { ok: false, error: 'Il PGN non contiene alcuna mossa da analizzare.' };
+    return { ok: false, error: msgPack.noMoves };
   }
 
   const headers = chess.header();
-  const whiteName = (headers.White || 'Bianco').slice(0, 32);
-  const blackName = (headers.Black || 'Nero').slice(0, 32);
+  const whiteName = (headers.White || msgPack.white).slice(0, 32);
+  const blackName = (headers.Black || msgPack.black).slice(0, 32);
   const whiteElo = headers.WhiteElo ? parseInt(headers.WhiteElo, 10) : undefined;
   const blackElo = headers.BlackElo ? parseInt(headers.BlackElo, 10) : undefined;
 
@@ -467,7 +1127,7 @@ export function parsePgnForAnalysis(
     if (rawMoves.length === 0) {
       return {
         ok: false,
-        error: 'PGN non valido o incompleto: impossibile ricostruire le mosse della partita.',
+        error: msgPack.invalid,
       };
     }
   }
@@ -492,7 +1152,10 @@ export function parsePgnForAnalysis(
       playerColor: detectedColor,
       result,
       resultLabel,
-      endReason: headers.Termination || headers.Event || 'Partita importata da PGN',
+      endReason:
+        headers.Termination ||
+        headers.Event ||
+        (code === 'it' ? 'Partita importata da PGN' : 'Imported PGN Game'),
       pgn: chess.pgn(),
       rawMoves,
     },
@@ -501,7 +1164,8 @@ export function parsePgnForAnalysis(
 
 export function gameStateToParsedInput(
   game: GameState,
-  myUsername: string
+  myUsername: string,
+  lang?: string
 ): ParsedGameInput {
   const playerColor: PieceColor =
     !game.white.isBot && game.white.username.toLowerCase() === myUsername.toLowerCase()
@@ -544,7 +1208,7 @@ export function gameStateToParsedInput(
     playerColor,
     result,
     resultLabel,
-    endReason: game.endReason || 'Partita BioChess',
+    endReason: game.endReason || (normalizeUiLang(lang) === 'it' ? 'Partita BioChess' : 'BioChess Game'),
     pgn: game.pgn,
     rawMoves,
   };
@@ -552,7 +1216,8 @@ export function gameStateToParsedInput(
 
 export async function analyzeFullGameWithEngine(
   parsed: ParsedGameInput,
-  onProgress?: (completed: number, total: number) => void
+  onProgress?: (completed: number, total: number) => void,
+  lang?: string
 ): Promise<FullGameAnalysis> {
   const total = parsed.rawMoves.length;
   const evalCache = new Map<string, ReturnType<typeof searchPositionWithPv>>();
@@ -566,7 +1231,7 @@ export async function analyzeFullGameWithEngine(
 
   const analyzedMoves: AnalyzedMove[] = [];
   const sans = parsed.rawMoves.map((m) => m.san);
-  const opening = detectOpeningFromSans(sans);
+  const opening = detectOpeningFromSans(sans, lang);
 
   for (let i = 0; i < total; i++) {
     const raw = parsed.rawMoves[i];
@@ -668,6 +1333,7 @@ export async function analyzeFullGameWithEngine(
       mateAfter: unified.mateAfter,
       bestPvSan,
       playedPvSan,
+      lang,
     });
 
     analyzedMoves.push({
@@ -780,6 +1446,7 @@ export async function analyzeFullGameWithEngine(
       mateAfter: m.mateAfter,
       bestPvSan: m.bestPvSan,
       playedPvSan: m.playedPvSan,
+      lang,
     });
   }
 

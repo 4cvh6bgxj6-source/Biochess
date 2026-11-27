@@ -6,10 +6,36 @@ import type { PieceSymbol, Square } from 'chess.js';
 import { motion } from 'motion/react';
 import { getBoardTheme, type BoardThemeId, type PieceSetId } from '@/lib/board-themes';
 import type { GameMove, MoveQuality, PieceColor } from '@/lib/types';
+import { normalizeUiLang, type SupportedUiLang } from '@/lib/i18n';
 import { soundFX } from '@/lib/sound';
 import { useBoardStyle } from './BoardThemeContext';
 import { ChessPiece } from './ChessPiece';
 import { MoveQualityBadge } from './MoveQualityBadge';
+
+const PROMO_TEXT: Record<
+  SupportedUiLang,
+  {
+    title: string;
+    cancel: string;
+    promoteTo: string;
+    q: string;
+    r: string;
+    b: string;
+    n: string;
+  }
+> = {
+  it: { title: 'Promozione pedone', cancel: 'Annulla', promoteTo: 'Promuovi a', q: 'Donna', r: 'Torre', b: 'Alfiere', n: 'Cavallo' },
+  en: { title: 'Pawn promotion', cancel: 'Cancel', promoteTo: 'Promote to', q: 'Queen', r: 'Rook', b: 'Bishop', n: 'Knight' },
+  es: { title: 'Promoción de peón', cancel: 'Cancelar', promoteTo: 'Promocionar a', q: 'Dama', r: 'Torre', b: 'Alfil', n: 'Caballo' },
+  fr: { title: 'Promotion du pion', cancel: 'Annuler', promoteTo: 'Promouvoir en', q: 'Dame', r: 'Tour', b: 'Fou', n: 'Cavalier' },
+  de: { title: 'Bauernumwandlung', cancel: 'Abbrechen', promoteTo: 'Umwandeln in', q: 'Dame', r: 'Turm', b: 'Läufer', n: 'Springer' },
+  pt: { title: 'Promoção de peão', cancel: 'Cancelar', promoteTo: 'Promover para', q: 'Dama', r: 'Torre', b: 'Bispo', n: 'Cavalo' },
+  ru: { title: 'Превращение пешки', cancel: 'Отмена', promoteTo: 'Превратить в', q: 'Ферзь', r: 'Ладья', b: 'Слон', n: 'Конь' },
+  zh: { title: '兵升变', cancel: '取消', promoteTo: '升变为', q: '后', r: '车', b: '象', n: '马' },
+  ja: { title: 'ポーンのプロモーション', cancel: 'キャンセル', promoteTo: '昇格先:', q: 'クイーン', r: 'ルーク', b: 'ビショップ', n: 'ナイト' },
+  ko: { title: '폰 프로모션', cancel: '취소', promoteTo: '승진:', q: '퀸', r: '룩', b: '비숍', n: '나이트' },
+  ar: { title: 'ترقية البيدق', cancel: 'إلغاء', promoteTo: 'ترقية إلى', q: 'وزير', r: 'رخ', b: 'فيل', n: 'حصان' },
+};
 
 export type ArrowColor = 'orange' | 'green' | 'blue' | 'red';
 
@@ -49,6 +75,7 @@ interface ChessBoardProps {
   onMove: (from: string, to: string, promotion?: 'q' | 'r' | 'b' | 'n') => void;
   boardThemeId?: BoardThemeId;
   pieceSetId?: PieceSetId;
+  lang?: string;
 }
 
 interface TrackedPiece {
@@ -532,7 +559,9 @@ export function ChessBoard({
   onMove,
   boardThemeId: boardThemeOverride,
   pieceSetId: pieceSetOverride,
+  lang,
 }: ChessBoardProps) {
+  const promoText = PROMO_TEXT[normalizeUiLang(lang)];
   const { boardTheme: ctxBoardTheme } = useBoardStyle();
   const boardTheme = boardThemeOverride ? getBoardTheme(boardThemeOverride) : ctxBoardTheme;
   const boardRef = useRef<HTMLDivElement>(null);
@@ -1363,7 +1392,7 @@ export function ChessBoard({
         <div className="absolute inset-0 z-30 bg-black/70 rounded flex items-center justify-center p-4">
           <div className="bg-[#262421] border border-[#3C3A36] rounded-md p-4 shadow-2xl max-w-xs w-full">
             <p className="text-sm font-semibold text-white text-center mb-3">
-              Promozione pedone
+              {promoText.title}
             </p>
             <div className="grid grid-cols-4 gap-2">
               {(['q', 'r', 'b', 'n'] as const).map((promo) => (
@@ -1395,15 +1424,7 @@ export function ChessBoard({
                     setPendingPromotion(null);
                   }}
                   className="aspect-square rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] p-2 flex items-center justify-center transition-colors"
-                  aria-label={`Promuovi a ${
-                    promo === 'q'
-                      ? 'Donna'
-                      : promo === 'r'
-                        ? 'Torre'
-                        : promo === 'b'
-                          ? 'Alfiere'
-                          : 'Cavallo'
-                  }`}
+                  aria-label={`${promoText.promoteTo} ${promoText[promo]}`}
                 >
                   <ChessPiece type={promo} color={pendingPromotion.color} pieceSet={pieceSetOverride} />
                 </button>
@@ -1414,7 +1435,7 @@ export function ChessBoard({
               onClick={() => setPendingPromotion(null)}
               className="mt-3 w-full py-1.5 text-xs text-neutral-400 hover:text-white transition-colors"
             >
-              Annulla
+              {promoText.cancel}
             </button>
           </div>
         </div>

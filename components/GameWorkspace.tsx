@@ -23,7 +23,6 @@ import {
 } from 'lucide-react';
 import {
   isTrainingBot,
-  TIME_CONTROLS,
   type GameMove,
   type GameState,
   type MoveQuality,
@@ -31,17 +30,18 @@ import {
 } from '@/lib/types';
 import { computePostGameReview } from '@/lib/chess-bot';
 import { soundFX } from '@/lib/sound';
-import type { UiDictionary } from '@/lib/i18n';
+import { getLocalizedTimeControl, translateEndReason, type UiDictionary } from '@/lib/i18n';
 import { ChessBoard, type BoardArrow, type BoardHighlight, type PremoveItem } from './ChessBoard';
 import { PlayerBar } from './PlayerBar';
 import { MatchChat } from './MatchChat';
-import { MoveQualityBadge, QUALITY_META } from './MoveQualityBadge';
+import { getQualityMeta, MoveQualityBadge } from './MoveQualityBadge';
 
 interface GameWorkspaceProps {
   game: GameState;
   myUid?: string;
   myUsername: string;
   dict: UiDictionary;
+  lang?: string;
   whiteTimeMs: number;
   blackTimeMs: number;
   isBoardSynced?: boolean;
@@ -98,6 +98,7 @@ export function GameWorkspace({
   myUid,
   myUsername,
   dict,
+  lang,
   whiteTimeMs,
   blackTimeMs,
   isBoardSynced = true,
@@ -402,8 +403,8 @@ export function GameWorkspace({
   const botReplyMove = showingPlayerFocusAfterBot ? inspectedMove : null;
 
   const evalMeta =
-    showMoveAnalysis && evalMove?.quality && evalMove.quality in QUALITY_META
-      ? QUALITY_META[evalMove.quality]
+    showMoveAnalysis && evalMove?.quality
+      ? getQualityMeta(evalMove.quality, lang)
       : null;
 
   const bestMoveHint =
@@ -447,6 +448,7 @@ export function GameWorkspace({
               highlights={highlights}
               onArrowsChange={setArrows}
               onHighlightsChange={setHighlights}
+              lang={lang}
               onMove={(from, to, promo) => {
                 setViewMoveIndex(null);
                 onMove(from, to, promo);
@@ -483,7 +485,7 @@ export function GameWorkspace({
               <span>{dict.lobby}</span>
             </button>
             <span className="text-xs font-semibold text-[#9E9D9A]">
-              {TIME_CONTROLS[game.timeControl]?.label ?? game.timeControl} · {game.moves.length} {dict.movesWord}
+              {getLocalizedTimeControl(game.timeControl, lang).label} · {game.moves.length} {dict.movesWord}
             </span>
           </div>
 
@@ -505,7 +507,7 @@ export function GameWorkspace({
                   </span>
                 )}
               </div>
-              <p className="text-xs text-[#C3C2C0] mt-0.5">{game.endReason}</p>
+              <p className="text-xs text-[#C3C2C0] mt-0.5">{translateEndReason(game.endReason, lang)}</p>
 
               {/* Post-Game Review Summary (Bot & Online PvP matches) */}
               <div className="mt-3 p-3 rounded bg-[#21201D] border border-[#81B64C]/55 space-y-2.5">
@@ -555,7 +557,7 @@ export function GameWorkspace({
                   </span>
                   <span className="text-[#26D0C9]">!! {myQualityCounts.brilliant}</span>
                   <span className="text-[#7AB3E0]">! {myQualityCounts.great}</span>
-                  <span className="text-[#9ED16A]">Buone {myQualityCounts.good}</span>
+                  <span className="text-[#9ED16A]">{dict.mqGood} {myQualityCounts.good}</span>
                   <span className="text-[#E7C666]">?! {myQualityCounts.neutral}</span>
                   <span className="text-[#F5A84B]">? {myQualityCounts.mistake}</span>
                   <span className="text-[#F16562]">?? {myQualityCounts.blunder}</span>
@@ -619,20 +621,20 @@ export function GameWorkspace({
             <div className="px-3.5 py-2 bg-[#21201D] border-b border-[#3C3A36] flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 {evalMove.quality && (
-                  <MoveQualityBadge quality={evalMove.quality} size="board" />
+                  <MoveQualityBadge quality={evalMove.quality} size="board" lang={lang} />
                 )}
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-white truncate">
                     {isActive && game.isBotGame && evalMove.color === myColor && (
                       <span className="text-[10px] uppercase tracking-wide text-[#9E9D9A] mr-1.5">
-                        Tu:
+                        {dict.youTag}:
                       </span>
                     )}
                     <span className="font-mono-tabular mr-1.5">{evalMove.san}</span>
                     {evalMeta ? (
                       <span className={evalMeta.textClass}>{evalMeta.title}</span>
                     ) : (
-                      <span className="text-[#9E9D9A]">Valutata</span>
+                      <span className="text-[#9E9D9A]">{dict.evaluatedLabel}</span>
                     )}
                   </p>
                   <p className="text-[11px] text-[#9E9D9A] truncate">
@@ -644,7 +646,7 @@ export function GameWorkspace({
                     ) : evalMeta ? (
                       evalMeta.subtitle
                     ) : (
-                      'Mossa analizzata'
+                      dict.analyzedMoveFallback
                     )}
                   </p>
                 </div>
@@ -653,7 +655,7 @@ export function GameWorkspace({
                 {botReplyMove && (
                   <span className="px-1.5 py-0.5 rounded bg-[#2B2926] border border-[#3C3A36] text-[10px] font-mono-tabular text-[#C3C2C0] inline-flex items-center gap-1">
                     <span>Bot: {botReplyMove.san}</span>
-                    <MoveQualityBadge quality={botReplyMove.quality} size="sm" />
+                    <MoveQualityBadge quality={botReplyMove.quality} size="sm" lang={lang} />
                   </span>
                 )}
                 {isActive && game.isBotGame && reviewData && (
@@ -729,7 +731,7 @@ export function GameWorkspace({
                       >
                         <span className="truncate">{pair.white.move.san}</span>
                         {showMoveAnalysis && (
-                          <MoveQualityBadge quality={pair.white.move.quality} size="sm" />
+                          <MoveQualityBadge quality={pair.white.move.quality} size="sm" lang={lang} />
                         )}
                       </button>
                     )}
@@ -746,7 +748,7 @@ export function GameWorkspace({
                       >
                         <span className="truncate">{pair.black.move.san}</span>
                         {showMoveAnalysis && (
-                          <MoveQualityBadge quality={pair.black.move.quality} size="sm" />
+                          <MoveQualityBadge quality={pair.black.move.quality} size="sm" lang={lang} />
                         )}
                       </button>
                     )}
@@ -776,7 +778,7 @@ export function GameWorkspace({
                 type="button"
                 onClick={() => setViewMoveIndex(-1)}
                 disabled={game.moves.length === 0}
-                aria-label="Inizio"
+                aria-label={dict.navFirst}
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
               >
                 <ChevronFirst className="w-4 h-4" />
@@ -790,7 +792,7 @@ export function GameWorkspace({
                   setViewMoveIndex(target);
                 }}
                 disabled={game.moves.length === 0 || viewMoveIndex === -1}
-                aria-label="Indietro"
+                aria-label={dict.navPrev}
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
               >
                 <ChevronLeft className="w-4 h-4" />
@@ -806,7 +808,7 @@ export function GameWorkspace({
                   setViewMoveIndex(next >= game.moves.length - 1 ? null : next);
                 }}
                 disabled={viewMoveIndex === null}
-                aria-label="Avanti"
+                aria-label={dict.navNext}
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
               >
                 <ChevronRight className="w-4 h-4" />
@@ -820,7 +822,7 @@ export function GameWorkspace({
                   setViewMoveIndex(null);
                 }}
                 disabled={viewMoveIndex === null}
-                aria-label="Fine"
+                aria-label={dict.navLast}
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36] disabled:opacity-30"
               >
                 <ChevronLast className="w-4 h-4" />
@@ -828,7 +830,7 @@ export function GameWorkspace({
               <button
                 type="button"
                 onClick={() => setFlipped((f) => !f)}
-                aria-label="Capovolgi"
+                aria-label={dict.flipBoard}
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36]"
               >
                 <RotateCcw className="w-4 h-4" />
@@ -836,7 +838,7 @@ export function GameWorkspace({
               <button
                 type="button"
                 onClick={onToggleMute}
-                aria-label={muted ? 'Attiva audio' : 'Disattiva audio'}
+                aria-label={muted ? dict.audioUnmute : dict.audioMute}
                 className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36]"
               >
                 {muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
@@ -844,7 +846,7 @@ export function GameWorkspace({
               <button
                 type="button"
                 onClick={() => setArrowMode((m) => !m)}
-                title="Attiva frecce con il tasto sinistro"
+                title={dict.arrowsTooltip}
                 className={`px-2 py-1 rounded text-xs font-semibold inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
                   arrowMode
                     ? 'bg-[#FFAA00] text-[#21201D]'
@@ -861,8 +863,8 @@ export function GameWorkspace({
                     setArrows([]);
                     setHighlights([]);
                   }}
-                  aria-label="Cancella frecce"
-                  title="Cancella frecce"
+                  aria-label={dict.clearArrowsLabel}
+                  title={dict.clearArrowsLabel}
                   className="p-1.5 rounded text-[#BABABA] hover:text-white hover:bg-[#3C3A36]"
                 >
                   <Eraser className="w-4 h-4" />
@@ -935,6 +937,7 @@ export function GameWorkspace({
             myUsername={myUsername}
             opponentUsername={opponent.username}
             isBotGame={game.isBotGame}
+            dict={dict}
             onSend={onSendChat}
           />
         </div>

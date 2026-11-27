@@ -45,11 +45,416 @@ import {
 } from './chess-bot';
 import { getLocalizedBotDrawReply } from './bot-dialogue';
 import { db, handleFirestoreError, OperationType } from './firebase';
+import { normalizeUiLang, type SupportedUiLang } from './i18n';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 export const MIN_ELO = 100;
 const USERNAME_REGEX = /^[a-zA-Z0-9_]{2,20}$/;
 const migratingMinEloUids = new Set<string>();
+
+interface FsLocaleText {
+  usernameLength: string;
+  usernameReserved: string;
+  usernameTaken: string;
+  invalidOpponent: string;
+  cannotChallengeSelf: string;
+  playerNotFound: (name: string) => string;
+  playerUnavailable: (name: string) => string;
+  challengeUnavailable: string;
+  onePlayerUnavailable: string;
+  matchStarted: string;
+  gameEnded: string;
+  invalidMove: string;
+  timeExpired: string;
+  gameNotFound: string;
+  moveAlreadyUpdated: string;
+  checkmateWins: (name: string) => string;
+  stalemateDraw: string;
+  repetitionDraw: string;
+  insufficientDraw: string;
+  fiftyMoveDraw: string;
+  resignedReason: (name: string) => string;
+  timeoutReason: (name: string) => string;
+  drawOfferMsg: (name: string) => string;
+  drawAgreedReason: string;
+  drawAcceptedMsg: string;
+  drawDeclinedMsg: (name: string) => string;
+  rematchStartedMsg: string;
+  goodGameFallback: string;
+  whiteFallback: string;
+  blackFallback: string;
+  freeOpeningFallback: string;
+}
+
+const FS_TEXT: Record<SupportedUiLang, FsLocaleText> = {
+  it: {
+    usernameLength: 'Usa da 2 a 20 caratteri: solo lettere, numeri o underscore (_).',
+    usernameReserved: 'Nome riservato. Scegline un altro.',
+    usernameTaken: 'Nome già in uso.',
+    invalidOpponent: 'Username avversario non valido.',
+    cannotChallengeSelf: 'Non puoi sfidare te stesso.',
+    playerNotFound: (n) => `Giocatore "${n}" non trovato.`,
+    playerUnavailable: (n) => `Giocatore "${n}" non disponibile.`,
+    challengeUnavailable: 'La sfida non è più disponibile.',
+    onePlayerUnavailable: 'Uno dei giocatori non è più disponibile.',
+    matchStarted: 'Partita iniziata. Buona sfida!',
+    gameEnded: 'Partita già conclusa.',
+    invalidMove: 'Mossa non valida.',
+    timeExpired: 'Tempo scaduto.',
+    gameNotFound: 'Partita non trovata.',
+    moveAlreadyUpdated: 'Mossa già aggiornata.',
+    checkmateWins: (n) => `Scacco matto · Vince ${n}`,
+    stalemateDraw: 'Patta per stallo',
+    repetitionDraw: 'Patta per ripetizione di mosse',
+    insufficientDraw: 'Patta per materiale insufficiente',
+    fiftyMoveDraw: 'Patta (regola delle 50 mosse)',
+    resignedReason: (n) => `${n} ha abbandonato la partita.`,
+    timeoutReason: (n) => `Tempo scaduto per ${n}.`,
+    drawOfferMsg: (n) => `${n} propone la patta.`,
+    drawAgreedReason: 'Patta concordata.',
+    drawAcceptedMsg: 'Patta accettata.',
+    drawDeclinedMsg: (n) => `${n} ha rifiutato la patta.`,
+    rematchStartedMsg: 'Rivincita iniziata!',
+    goodGameFallback: 'Buona partita!',
+    whiteFallback: 'Bianco',
+    blackFallback: 'Nero',
+    freeOpeningFallback: 'Apertura Libera',
+  },
+  en: {
+    usernameLength: 'Use 2 to 20 characters: letters, numbers, or underscore (_) only.',
+    usernameReserved: 'Reserved name. Please choose another.',
+    usernameTaken: 'Username already taken.',
+    invalidOpponent: 'Invalid opponent username.',
+    cannotChallengeSelf: 'You cannot challenge yourself.',
+    playerNotFound: (n) => `Player "${n}" not found.`,
+    playerUnavailable: (n) => `Player "${n}" is unavailable.`,
+    challengeUnavailable: 'This challenge is no longer available.',
+    onePlayerUnavailable: 'One of the players is no longer available.',
+    matchStarted: 'Game started. Good luck!',
+    gameEnded: 'Game has already ended.',
+    invalidMove: 'Illegal move.',
+    timeExpired: 'Time expired.',
+    gameNotFound: 'Game not found.',
+    moveAlreadyUpdated: 'Move already updated.',
+    checkmateWins: (n) => `Checkmate · ${n} wins`,
+    stalemateDraw: 'Draw by stalemate',
+    repetitionDraw: 'Draw by threefold repetition',
+    insufficientDraw: 'Draw by insufficient material',
+    fiftyMoveDraw: 'Draw (50-move rule)',
+    resignedReason: (n) => `${n} resigned.`,
+    timeoutReason: (n) => `${n} ran out of time.`,
+    drawOfferMsg: (n) => `${n} offers a draw.`,
+    drawAgreedReason: 'Draw by agreement.',
+    drawAcceptedMsg: 'Draw accepted.',
+    drawDeclinedMsg: (n) => `${n} declined the draw.`,
+    rematchStartedMsg: 'Rematch started!',
+    goodGameFallback: 'Good game!',
+    whiteFallback: 'White',
+    blackFallback: 'Black',
+    freeOpeningFallback: 'Free Opening',
+  },
+  es: {
+    usernameLength: 'Usa de 2 a 20 caracteres: solo letras, números o guion bajo (_).',
+    usernameReserved: 'Nombre reservado. Elige otro.',
+    usernameTaken: 'El nombre de usuario ya está en uso.',
+    invalidOpponent: 'Usuario del rival no válido.',
+    cannotChallengeSelf: 'No puedes desafiarte a ti mismo.',
+    playerNotFound: (n) => `Jugador "${n}" no encontrado.`,
+    playerUnavailable: (n) => `Jugador "${n}" no disponible.`,
+    challengeUnavailable: 'El desafío ya no está disponible.',
+    onePlayerUnavailable: 'Uno de los jugadores ya no está disponible.',
+    matchStarted: 'Partida iniciada. ¡Buena suerte!',
+    gameEnded: 'La partida ya ha terminado.',
+    invalidMove: 'Jugada no válida.',
+    timeExpired: 'Tiempo agotado.',
+    gameNotFound: 'Partida no encontrada.',
+    moveAlreadyUpdated: 'Jugada ya actualizada.',
+    checkmateWins: (n) => `Jaque mate · Gana ${n}`,
+    stalemateDraw: 'Tablas por ahogado',
+    repetitionDraw: 'Tablas por repetición triple',
+    insufficientDraw: 'Tablas por material insuficiente',
+    fiftyMoveDraw: 'Tablas (regla de 50 jugadas)',
+    resignedReason: (n) => `${n} se rindió.`,
+    timeoutReason: (n) => `Tiempo agotado para ${n}.`,
+    drawOfferMsg: (n) => `${n} ofrece tablas.`,
+    drawAgreedReason: 'Tablas acordadas.',
+    drawAcceptedMsg: 'Tablas aceptadas.',
+    drawDeclinedMsg: (n) => `${n} rechazó las tablas.`,
+    rematchStartedMsg: '¡Revancha iniciada!',
+    goodGameFallback: '¡Buena partida!',
+    whiteFallback: 'Blancas',
+    blackFallback: 'Negras',
+    freeOpeningFallback: 'Apertura libre',
+  },
+  fr: {
+    usernameLength: 'Utilisez 2 à 20 caractères : lettres, chiffres ou underscore (_).',
+    usernameReserved: 'Nom réservé. Choisissez-en un autre.',
+    usernameTaken: 'Nom déjà utilisé.',
+    invalidOpponent: "Nom d'adversaire invalide.",
+    cannotChallengeSelf: 'Vous ne pouvez pas vous défier vous-même.',
+    playerNotFound: (n) => `Joueur "${n}" introuvable.`,
+    playerUnavailable: (n) => `Joueur "${n}" indisponible.`,
+    challengeUnavailable: "Le défi n'est plus disponible.",
+    onePlayerUnavailable: "L'un des joueurs n'est plus disponible.",
+    matchStarted: 'Partie commencée. Bonne partie !',
+    gameEnded: 'La partie est déjà terminée.',
+    invalidMove: 'Coup illégal.',
+    timeExpired: 'Temps écoulé.',
+    gameNotFound: 'Partie introuvable.',
+    moveAlreadyUpdated: 'Coup déjà mis à jour.',
+    checkmateWins: (n) => `Échec et mat · ${n} gagne`,
+    stalemateDraw: 'Nulle par pat',
+    repetitionDraw: 'Nulle par répétition',
+    insufficientDraw: 'Nulle par matériel insuffisant',
+    fiftyMoveDraw: 'Nulle (règle des 50 coups)',
+    resignedReason: (n) => `${n} a abandonné.`,
+    timeoutReason: (n) => `Temps écoulé pour ${n}.`,
+    drawOfferMsg: (n) => `${n} propose la nulle.`,
+    drawAgreedReason: 'Nulle convenue.',
+    drawAcceptedMsg: 'Nulle acceptée.',
+    drawDeclinedMsg: (n) => `${n} a refusé la nulle.`,
+    rematchStartedMsg: 'Revanche lancée !',
+    goodGameFallback: 'Bonne partie !',
+    whiteFallback: 'Blancs',
+    blackFallback: 'Noirs',
+    freeOpeningFallback: 'Ouverture libre',
+  },
+  de: {
+    usernameLength: 'Verwende 2 bis 20 Zeichen: nur Buchstaben, Ziffern oder Unterstrich (_).',
+    usernameReserved: 'Reservierter Name. Bitte wähle einen anderen.',
+    usernameTaken: 'Benutzername bereits vergeben.',
+    invalidOpponent: 'Ungültiger Gegner-Benutzername.',
+    cannotChallengeSelf: 'Du kannst dich nicht selbst herausfordern.',
+    playerNotFound: (n) => `Spieler "${n}" nicht gefunden.`,
+    playerUnavailable: (n) => `Spieler "${n}" nicht verfügbar.`,
+    challengeUnavailable: 'Die Herausforderung ist nicht mehr verfügbar.',
+    onePlayerUnavailable: 'Einer der Spieler ist nicht mehr verfügbar.',
+    matchStarted: 'Partie gestartet. Viel Erfolg!',
+    gameEnded: 'Partie ist bereits beendet.',
+    invalidMove: 'Ungültiger Zug.',
+    timeExpired: 'Zeit abgelaufen.',
+    gameNotFound: 'Partie nicht gefunden.',
+    moveAlreadyUpdated: 'Zug bereits aktualisiert.',
+    checkmateWins: (n) => `Schachmatt · ${n} gewinnt`,
+    stalemateDraw: 'Remis durch Patt',
+    repetitionDraw: 'Remis durch Stellungswiederholung',
+    insufficientDraw: 'Remis wegen unzureichenden Materials',
+    fiftyMoveDraw: 'Remis (50-Züge-Regel)',
+    resignedReason: (n) => `${n} hat aufgegeben.`,
+    timeoutReason: (n) => `Zeit abgelaufen für ${n}.`,
+    drawOfferMsg: (n) => `${n} bietet Remis an.`,
+    drawAgreedReason: 'Remis vereinbart.',
+    drawAcceptedMsg: 'Remis angenommen.',
+    drawDeclinedMsg: (n) => `${n} hat Remis abgelehnt.`,
+    rematchStartedMsg: 'Revanche gestartet!',
+    goodGameFallback: 'Gute Partie!',
+    whiteFallback: 'Weiß',
+    blackFallback: 'Schwarz',
+    freeOpeningFallback: 'Freie Eröffnung',
+  },
+  pt: {
+    usernameLength: 'Use de 2 a 20 caracteres: apenas letras, números ou underscore (_).',
+    usernameReserved: 'Nome reservado. Escolha outro.',
+    usernameTaken: 'Nome já está em uso.',
+    invalidOpponent: 'Nome de usuário do adversário inválido.',
+    cannotChallengeSelf: 'Você não pode desafiar a si mesmo.',
+    playerNotFound: (n) => `Jogador "${n}" não encontrado.`,
+    playerUnavailable: (n) => `Jogador "${n}" indisponível.`,
+    challengeUnavailable: 'O desafio não está mais disponível.',
+    onePlayerUnavailable: 'Um dos jogadores não está mais disponível.',
+    matchStarted: 'Partida iniciada. Bom jogo!',
+    gameEnded: 'Partida já encerrada.',
+    invalidMove: 'Lance inválido.',
+    timeExpired: 'Tempo esgotado.',
+    gameNotFound: 'Partida não encontrada.',
+    moveAlreadyUpdated: 'Lance já atualizado.',
+    checkmateWins: (n) => `Xeque-mate · ${n} vence`,
+    stalemateDraw: 'Empate por afogamento',
+    repetitionDraw: 'Empate por repetição de lances',
+    insufficientDraw: 'Empate por material insuficiente',
+    fiftyMoveDraw: 'Empate (regra dos 50 lances)',
+    resignedReason: (n) => `${n} desistiu.`,
+    timeoutReason: (n) => `Tempo esgotado para ${n}.`,
+    drawOfferMsg: (n) => `${n} propõe empate.`,
+    drawAgreedReason: 'Empate acordado.',
+    drawAcceptedMsg: 'Empate aceito.',
+    drawDeclinedMsg: (n) => `${n} recusou o empate.`,
+    rematchStartedMsg: 'Revanche iniciada!',
+    goodGameFallback: 'Bom jogo!',
+    whiteFallback: 'Brancas',
+    blackFallback: 'Pretas',
+    freeOpeningFallback: 'Abertura Livre',
+  },
+  ru: {
+    usernameLength: 'От 2 до 20 символов: только буквы, цифры или подчёркивание (_).',
+    usernameReserved: 'Имя зарезервировано. Выберите другое.',
+    usernameTaken: 'Имя уже занято.',
+    invalidOpponent: 'Некорректное имя соперника.',
+    cannotChallengeSelf: 'Нельзя вызвать самого себя.',
+    playerNotFound: (n) => `Игрок «${n}» не найден.`,
+    playerUnavailable: (n) => `Игрок «${n}» недоступен.`,
+    challengeUnavailable: 'Вызов больше недействителен.',
+    onePlayerUnavailable: 'Один из игроков больше недоступен.',
+    matchStarted: 'Партия началась. Удачи!',
+    gameEnded: 'Партия уже завершена.',
+    invalidMove: 'Невозможный ход.',
+    timeExpired: 'Время вышло.',
+    gameNotFound: 'Партия не найдена.',
+    moveAlreadyUpdated: 'Ход уже обновлён.',
+    checkmateWins: (n) => `Мат · Победил ${n}`,
+    stalemateDraw: 'Ничья (пат)',
+    repetitionDraw: 'Ничья (троекратное повторение)',
+    insufficientDraw: 'Ничья (недостаточно материала)',
+    fiftyMoveDraw: 'Ничья (правило 50 ходов)',
+    resignedReason: (n) => `${n} сдался.`,
+    timeoutReason: (n) => `Время истекло у ${n}.`,
+    drawOfferMsg: (n) => `${n} предлагает ничью.`,
+    drawAgreedReason: 'Ничья по соглашению.',
+    drawAcceptedMsg: 'Ничья принята.',
+    drawDeclinedMsg: (n) => `${n} отклонил ничью.`,
+    rematchStartedMsg: 'Реванш начался!',
+    goodGameFallback: 'Хорошей игры!',
+    whiteFallback: 'Белые',
+    blackFallback: 'Чёрные',
+    freeOpeningFallback: 'Свободный дебют',
+  },
+  zh: {
+    usernameLength: '请使用 2 至 20 个字符：仅限字母、数字或下划线 (_)。',
+    usernameReserved: '保留名称，请换一个。',
+    usernameTaken: '该用户名已被占用。',
+    invalidOpponent: '对手用户名无效。',
+    cannotChallengeSelf: '不能挑战自己。',
+    playerNotFound: (n) => `未找到玩家“${n}”。`,
+    playerUnavailable: (n) => `玩家“${n}”当前不可用。`,
+    challengeUnavailable: '该挑战已失效。',
+    onePlayerUnavailable: '其中一位玩家已不可用。',
+    matchStarted: '对局已开始，祝对弈愉快！',
+    gameEnded: '对局已结束。',
+    invalidMove: '非法着法。',
+    timeExpired: '时间耗尽。',
+    gameNotFound: '未找到对局。',
+    moveAlreadyUpdated: '着法已更新。',
+    checkmateWins: (n) => `将杀 · ${n} 获胜`,
+    stalemateDraw: '逼和',
+    repetitionDraw: '三次重复局面和棋',
+    insufficientDraw: '子力不足和棋',
+    fiftyMoveDraw: '50步规则和棋',
+    resignedReason: (n) => `${n} 认输。`,
+    timeoutReason: (n) => `${n} 超时。`,
+    drawOfferMsg: (n) => `${n} 提出和棋。`,
+    drawAgreedReason: '双方同意和棋。',
+    drawAcceptedMsg: '和棋已接受。',
+    drawDeclinedMsg: (n) => `${n} 拒绝了和棋。`,
+    rematchStartedMsg: '再战已开始！',
+    goodGameFallback: '祝你对局愉快！',
+    whiteFallback: '白棋',
+    blackFallback: '黑棋',
+    freeOpeningFallback: '自由开局',
+  },
+  ja: {
+    usernameLength: '2〜20文字の英数字またはアンダースコア(_)を使用してください。',
+    usernameReserved: '予約語のため使用できません。別の名前を選んでください。',
+    usernameTaken: 'このユーザー名は既に使用されています。',
+    invalidOpponent: '対戦相手のユーザー名が無効です。',
+    cannotChallengeSelf: '自分自身に挑戦することはできません。',
+    playerNotFound: (n) => `プレイヤー「${n}」が見つかりません。`,
+    playerUnavailable: (n) => `プレイヤー「${n}」は現在利用できません。`,
+    challengeUnavailable: 'この挑戦は無効になりました。',
+    onePlayerUnavailable: 'いずれかのプレイヤーが利用できません。',
+    matchStarted: '対局開始。よろしくお願いします！',
+    gameEnded: '対局は既に終了しています。',
+    invalidMove: '反則手です。',
+    timeExpired: '時間切れです。',
+    gameNotFound: '対局が見つかりません。',
+    moveAlreadyUpdated: '既に手が更新されています。',
+    checkmateWins: (n) => `チェックメイト · ${n} の勝利`,
+    stalemateDraw: 'ステイルメイト（引き分け）',
+    repetitionDraw: '千日手（引き分け）',
+    insufficientDraw: '戦力不足（引き分け）',
+    fiftyMoveDraw: '50手ルール（引き分け）',
+    resignedReason: (n) => `${n} が投了しました。`,
+    timeoutReason: (n) => `${n} の時間切れ。`,
+    drawOfferMsg: (n) => `${n} がドローを提案しました。`,
+    drawAgreedReason: '合意による引き分け。',
+    drawAcceptedMsg: 'ドローが承認されました。',
+    drawDeclinedMsg: (n) => `${n} がドローを辞退しました。`,
+    rematchStartedMsg: '再戦が開始されました！',
+    goodGameFallback: 'よろしくお願いします！',
+    whiteFallback: '白',
+    blackFallback: '黒',
+    freeOpeningFallback: '自由戦型',
+  },
+  ko: {
+    usernameLength: '2~20자의 영문, 숫자 또는 밑줄(_)만 사용하세요.',
+    usernameReserved: '예약된 이름입니다. 다른 이름을 선택하세요.',
+    usernameTaken: '이미 사용 중인 사용자 이름입니다.',
+    invalidOpponent: '상대 사용자 이름이 올바르지 않습니다.',
+    cannotChallengeSelf: '자기 자신에게 도전할 수 없습니다.',
+    playerNotFound: (n) => `플레이어 "${n}"을(를) 찾을 수 없습니다.`,
+    playerUnavailable: (n) => `플레이어 "${n}"을(를) 이용할 수 없습니다.`,
+    challengeUnavailable: '더 이상 유효하지 않은 도전입니다.',
+    onePlayerUnavailable: '플레이어 중 한 명을 이용할 수 없습니다.',
+    matchStarted: '대국이 시작되었습니다. 즐거운 대국 되세요!',
+    gameEnded: '이미 종료된 대국입니다.',
+    invalidMove: '유효하지 않은 수입니다.',
+    timeExpired: '시간이 종료되었습니다.',
+    gameNotFound: '대국을 찾을 수 없습니다.',
+    moveAlreadyUpdated: '이미 업데이트된 수입니다.',
+    checkmateWins: (n) => `체크메이트 · ${n} 승리`,
+    stalemateDraw: '스테일메이트 무승부',
+    repetitionDraw: '3회 동형 반복 무승부',
+    insufficientDraw: '기물 부족 무승부',
+    fiftyMoveDraw: '50수 규칙 무승부',
+    resignedReason: (n) => `${n} 기권.`,
+    timeoutReason: (n) => `${n} 시간 초과.`,
+    drawOfferMsg: (n) => `${n} 님이 무승부를 제안했습니다.`,
+    drawAgreedReason: '합의 무승부.',
+    drawAcceptedMsg: '무승부가 수락되었습니다.',
+    drawDeclinedMsg: (n) => `${n} 님이 무승부를 거절했습니다.`,
+    rematchStartedMsg: '재대국이 시작되었습니다!',
+    goodGameFallback: '좋은 대국 되세요!',
+    whiteFallback: '백',
+    blackFallback: '흑',
+    freeOpeningFallback: '자유 오프닝',
+  },
+  ar: {
+    usernameLength: 'استخدم 2 إلى 20 حرفاً: حروفاً أو أرقاماً أو شرطة سفلية (_) فقط.',
+    usernameReserved: 'اسم محجوز. يرجى اختيار اسم آخر.',
+    usernameTaken: 'اسم المستخدم مستخدم بالفعل.',
+    invalidOpponent: 'اسم مستخدم الخصم غير صالح.',
+    cannotChallengeSelf: 'لا يمكنك تحدي نفسك.',
+    playerNotFound: (n) => `اللاعب "${n}" غير موجود.`,
+    playerUnavailable: (n) => `اللاعب "${n}" غير متاح.`,
+    challengeUnavailable: 'لم يعد التحدي متاحاً.',
+    onePlayerUnavailable: 'أحد اللاعبين لم يعد متاحاً.',
+    matchStarted: 'بدأت المباراة. حظاً موفقاً!',
+    gameEnded: 'انتهت المباراة بالفعل.',
+    invalidMove: 'نقلة غير قانونية.',
+    timeExpired: 'انتهى الوقت.',
+    gameNotFound: 'المباراة غير موجودة.',
+    moveAlreadyUpdated: 'تم تحديث النقلة بالفعل.',
+    checkmateWins: (n) => `كش مات · فاز ${n}`,
+    stalemateDraw: 'تعادل بالردب',
+    repetitionDraw: 'تعادل بتكرار النقلات',
+    insufficientDraw: 'تعادل لعدم كفاية القطع',
+    fiftyMoveDraw: 'تعادل (قاعدة 50 نقلة)',
+    resignedReason: (n) => `استسلم ${n}.`,
+    timeoutReason: (n) => `انتهى وقت ${n}.`,
+    drawOfferMsg: (n) => `عرض ${n} التعادل.`,
+    drawAgreedReason: 'تعادل بالاتفاق.',
+    drawAcceptedMsg: 'تم قبول التعادل.',
+    drawDeclinedMsg: (n) => `رفض ${n} التعادل.`,
+    rematchStartedMsg: 'بدأت مباراة الإعادة!',
+    goodGameFallback: 'مباراة موفقة!',
+    whiteFallback: 'الأبيض',
+    blackFallback: 'الأسود',
+    freeOpeningFallback: 'افتتاح حر',
+  },
+};
+
+function getFsText(lang?: string): FsLocaleText {
+  return FS_TEXT[normalizeUiLang(lang)] || FS_TEXT.en;
+}
 
 function clampElo(raw: unknown, fallback = 300): number {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) {
@@ -130,17 +535,21 @@ export function normalizeUsernameKey(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
-export function validateUsernameInput(raw: string): { ok: true; username: string; key: string } | { ok: false; error: string } {
+export function validateUsernameInput(
+  raw: string,
+  lang?: string
+): { ok: true; username: string; key: string } | { ok: false; error: string } {
+  const t = getFsText(lang);
   const trimmed = raw.trim();
   if (!USERNAME_REGEX.test(trimmed)) {
     return {
       ok: false,
-      error: 'Usa da 2 a 20 caratteri: solo lettere, numeri o underscore (_).',
+      error: t.usernameLength,
     };
   }
   const key = trimmed.toLowerCase();
   if (RESERVED_USERNAMES.has(key)) {
-    return { ok: false, error: 'Nome riservato. Scegline un altro.' };
+    return { ok: false, error: t.usernameReserved };
   }
   return { ok: true, username: trimmed, key };
 }
@@ -307,20 +716,21 @@ export function assembleGameState(
 export async function registerBioChessUsername(
   uid: string,
   rawUsername: string,
-  rawLang = 'it',
-  rawCountry = 'IT'
+  rawLang = 'en',
+  rawCountry = 'US'
 ): Promise<{ ok: true; profile: PlayerSummary } | { ok: false; error: string }> {
-  const v = validateUsernameInput(rawUsername);
+  const t = getFsText(rawLang);
+  const v = validateUsernameInput(rawUsername, rawLang);
   if (!v.ok) return v;
 
   const lang = sanitizeLangCode(rawLang);
-  const country = sanitizeCountryCode(rawCountry) || 'IT';
+  const country = sanitizeCountryCode(rawCountry) || 'US';
 
   const usernamePath = `usernames/${v.key}`;
   try {
     const existingClaim = await getDoc(doc(db, 'usernames', v.key));
     if (existingClaim.exists()) {
-      return { ok: false, error: 'Nome già in uso.' };
+      return { ok: false, error: t.usernameTaken };
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, usernamePath);
@@ -771,22 +1181,24 @@ export async function sendChallengeToUser(
   myUid: string,
   targetRawUsername: string,
   timeControl: TimeControlId,
-  colorPref: ColorPref
+  colorPref: ColorPref,
+  lang?: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  const t = getFsText(lang || me.lang);
   const trimmed = targetRawUsername.trim();
   const key = normalizeUsernameKey(trimmed);
   if (!USERNAME_REGEX.test(trimmed)) {
-    return { ok: false, error: 'Username avversario non valido.' };
+    return { ok: false, error: t.invalidOpponent };
   }
   if (key === normalizeUsernameKey(me.username)) {
-    return { ok: false, error: 'Non puoi sfidare te stesso.' };
+    return { ok: false, error: t.cannotChallengeSelf };
   }
 
   let targetUid = '';
   try {
     const claimSnap = await getDoc(doc(db, 'usernames', key));
     if (!claimSnap.exists()) {
-      return { ok: false, error: `Giocatore "${trimmed}" non trovato.` };
+      return { ok: false, error: t.playerNotFound(trimmed) };
     }
     targetUid = String(claimSnap.data().uid || '');
   } catch (error) {
@@ -794,7 +1206,7 @@ export async function sendChallengeToUser(
   }
 
   if (!targetUid || targetUid === myUid) {
-    return { ok: false, error: 'Non puoi sfidare te stesso.' };
+    return { ok: false, error: t.cannotChallengeSelf };
   }
 
   let targetUsername = trimmed;
@@ -802,7 +1214,7 @@ export async function sendChallengeToUser(
   try {
     const userSnap = await getDoc(doc(db, 'users', targetUid));
     if (!userSnap.exists()) {
-      return { ok: false, error: `Giocatore "${trimmed}" non disponibile.` };
+      return { ok: false, error: t.playerUnavailable(trimmed) };
     }
     const targetData = userSnap.data();
     targetUsername = String(targetData.username || trimmed).slice(0, 20);
@@ -855,8 +1267,10 @@ export async function cancelPendingChallenge(challengeId: string): Promise<void>
 export async function respondToChallenge(
   challengeId: string,
   accept: boolean,
-  myUid: string
+  myUid: string,
+  lang?: string
 ): Promise<{ ok: true; gameId?: string } | { ok: false; error: string }> {
+  const t = getFsText(lang);
   if (!accept) {
     try {
       await updateDoc(doc(db, 'challenges', challengeId), {
@@ -873,7 +1287,7 @@ export async function respondToChallenge(
   try {
     const chSnap = await getDoc(doc(db, 'challenges', challengeId));
     if (!chSnap.exists() || chSnap.data().status !== 'pending') {
-      return { ok: false, error: 'La sfida non è più disponibile.' };
+      return { ok: false, error: t.challengeUnavailable };
     }
     chData = chSnap.data();
   } catch (error) {
@@ -893,7 +1307,7 @@ export async function respondToChallenge(
       getDoc(doc(db, 'users', toUid)),
     ]);
     if (!fromSnap.exists() || !toSnap.exists()) {
-      return { ok: false, error: 'Uno dei giocatori non è più disponibile.' };
+      return { ok: false, error: t.onePlayerUnavailable };
     }
     const fd = fromSnap.data();
     const td = toSnap.data();
@@ -970,7 +1384,7 @@ export async function respondToChallenge(
       id: startMsgId,
       sender: 'BioChess',
       authorUid: myUid,
-      text: 'Partita iniziata. Buona sfida!',
+      text: t.matchStarted,
       kind: 'system',
       createdAt: serverTimestamp(),
     });
@@ -1128,10 +1542,12 @@ export async function submitMoveToFirestore(params: {
   liveBlackMs: number;
   botChatText?: string | null;
   expectedMovesCount?: number;
+  lang?: string;
 }): Promise<{ ok: true; nextStatus: GameStatus; movedColor: PieceColor; captured?: string; inCheck: boolean; quality: GameMove['quality'] } | { ok: false; error: string }> {
-  const { game, uid, from, to, promotion, liveWhiteMs, liveBlackMs, botChatText, expectedMovesCount } = params;
+  const { game, uid, from, to, promotion, liveWhiteMs, liveBlackMs, botChatText, expectedMovesCount, lang } = params;
+  const t = getFsText(lang);
   if (game.status !== 'active') {
-    return { ok: false, error: 'Partita già conclusa.' };
+    return { ok: false, error: t.gameEnded };
   }
 
   const chess = buildChessWithHistory(game);
@@ -1151,10 +1567,10 @@ export async function submitMoveToFirestore(params: {
       ...(promotion ? { promotion } : isPawnPromotion ? { promotion: 'q' } : {}),
     });
   } catch {
-    return { ok: false, error: 'Mossa non valida.' };
+    return { ok: false, error: t.invalidMove };
   }
   if (!moveRes) {
-    return { ok: false, error: 'Mossa non valida.' };
+    return { ok: false, error: t.invalidMove };
   }
 
   const baseMovesCount = Math.max(
@@ -1177,7 +1593,7 @@ export async function submitMoveToFirestore(params: {
     !isDummyTraining && game.timeControl !== 'unlimited' && baseMovesCount >= 1;
   const moverRemainingBeforeMove = movingColor === 'w' ? liveWhiteMs : liveBlackMs;
   if (isClockedActiveTurn && moverRemainingBeforeMove <= 0) {
-    return { ok: false, error: 'Tempo scaduto.' };
+    return { ok: false, error: t.timeExpired };
   }
 
   let nextWhiteMs = Math.max(0, Math.min(86400000, Math.round(Number.isFinite(liveWhiteMs) ? liveWhiteMs : 0)));
@@ -1197,26 +1613,23 @@ export async function submitMoveToFirestore(params: {
   if (chess.isCheckmate()) {
     nextStatus = 'checkmate';
     nextWinner = movingColor;
-    nextEndReason =
-      movingColor === 'w'
-        ? `Scacco matto · Vince ${game.white.username}`
-        : `Scacco matto · Vince ${game.black.username}`;
+    nextEndReason = t.checkmateWins(movingColor === 'w' ? game.white.username : game.black.username);
   } else if (chess.isStalemate()) {
     nextStatus = 'stalemate';
     nextWinner = 'draw';
-    nextEndReason = 'Patta per stallo';
+    nextEndReason = t.stalemateDraw;
   } else if (chess.isThreefoldRepetition()) {
     nextStatus = 'draw';
     nextWinner = 'draw';
-    nextEndReason = 'Patta per ripetizione di mosse';
+    nextEndReason = t.repetitionDraw;
   } else if (chess.isInsufficientMaterial()) {
     nextStatus = 'draw';
     nextWinner = 'draw';
-    nextEndReason = 'Patta per materiale insufficiente';
+    nextEndReason = t.insufficientDraw;
   } else if (chess.isDraw()) {
     nextStatus = 'draw';
     nextWinner = 'draw';
-    nextEndReason = 'Patta (regola delle 50 mosse)';
+    nextEndReason = t.fiftyMoveDraw;
   }
 
   const nextPly = baseMovesCount + 1;
@@ -1299,17 +1712,17 @@ export async function submitMoveToFirestore(params: {
     try {
       const latestSnap = await getDoc(doc(db, 'games', game.id));
       if (!latestSnap.exists()) {
-        return { ok: false, error: 'Partita non trovata.' };
+        return { ok: false, error: t.gameNotFound };
       }
       const latestData = latestSnap.data();
       if (latestData.status !== 'active') {
-        return { ok: false, error: 'Partita già conclusa.' };
+        return { ok: false, error: t.gameEnded };
       }
       if (
         (typeof latestData.movesCount === 'number' && latestData.movesCount >= nextPly) ||
         latestData.turn !== movingColor
       ) {
-        return { ok: false, error: 'Mossa già aggiornata.' };
+        return { ok: false, error: t.moveAlreadyUpdated };
       }
     } catch {
       // fall through to standard handler if server check itself fails
@@ -1358,6 +1771,7 @@ export async function runBotTurnInFirestore(params: {
     liveWhiteMs,
     liveBlackMs,
     botChatText: botComment,
+    lang,
   });
 
   if (!res.ok) {
@@ -1468,9 +1882,11 @@ export async function resignGameInFirestore(
   game: GameState,
   myColor: PieceColor,
   myUsername: string,
-  uid: string
+  uid: string,
+  lang?: string
 ): Promise<void> {
   if (game.status !== 'active') return;
+  const t = getFsText(lang);
   try {
     const latestSnap = await getDoc(doc(db, 'games', game.id));
     if (!latestSnap.exists() || latestSnap.data().status !== 'active') return;
@@ -1479,7 +1895,7 @@ export async function resignGameInFirestore(
   }
 
   const winner: PieceColor = myColor === 'w' ? 'b' : 'w';
-  const endReason = `${myUsername} ha abbandonato la partita.`.slice(0, 200);
+  const endReason = t.resignedReason(myUsername).slice(0, 200);
   const msgId = makeEntityId('msg');
 
   try {
@@ -1529,8 +1945,10 @@ export async function resignGameInFirestore(
 export async function claimTimeoutInFirestore(
   game: GameState,
   timedOutColor: PieceColor,
-  uid: string
+  uid: string,
+  lang?: string
 ): Promise<'claimed' | 'already_resolved'> {
+  const t = getFsText(lang);
   console.info('[BioChess][Timeout] claimTimeoutInFirestore invoked', {
     gameId: game.id,
     timedOutColor,
@@ -1576,9 +1994,9 @@ export async function claimTimeoutInFirestore(
 
       const winner: PieceColor = timedOutColor === 'w' ? 'b' : 'w';
       const loserName = timedOutColor === 'w' ? latest.whiteUsername : latest.blackUsername;
-      const safeWhiteName = (latest.whiteUsername.trim() || 'Bianco').slice(0, 32).padEnd(2, '_');
-      const safeBlackName = (latest.blackUsername.trim() || 'Nero').slice(0, 32).padEnd(2, '_');
-      const endReason = `Tempo scaduto per ${loserName || (timedOutColor === 'w' ? 'Bianco' : 'Nero')}.`.slice(0, 200);
+      const safeWhiteName = (latest.whiteUsername.trim() || t.whiteFallback).slice(0, 32).padEnd(2, '_');
+      const safeBlackName = (latest.blackUsername.trim() || t.blackFallback).slice(0, 32).padEnd(2, '_');
+      const endReason = t.timeoutReason(loserName || (timedOutColor === 'w' ? t.whiteFallback : t.blackFallback)).slice(0, 200);
       const clampClock = (ms: number) =>
         Math.max(0, Math.min(86400000, Math.round(Number.isFinite(ms) ? ms : 0)));
       const nextWhiteTimeMs = timedOutColor === 'w' ? 0 : clampClock(latest.whiteTimeMs);
@@ -1647,6 +2065,7 @@ export async function offerDrawInFirestore(
   lang?: string
 ): Promise<void> {
   if (game.status !== 'active' || game.drawOfferBy === myColor) return;
+  const t = getFsText(lang);
   const msgId = makeEntityId('msg');
 
   try {
@@ -1659,7 +2078,7 @@ export async function offerDrawInFirestore(
       id: msgId,
       sender: 'BioChess',
       authorUid: uid,
-      text: `${myUsername} propone la patta.`,
+      text: t.drawOfferMsg(myUsername).slice(0, 400),
       kind: 'system',
       createdAt: serverTimestamp(),
     });
@@ -1693,12 +2112,13 @@ export async function respondDrawInFirestore(
   lang?: string
 ): Promise<void> {
   if (game.status !== 'active' || !game.drawOfferBy) return;
+  const t = getFsText(lang);
   const msgId = makeEntityId('msg');
 
   try {
     const batch = writeBatch(db);
     if (accept) {
-      const endReason = 'Patta concordata.';
+      const endReason = t.drawAgreedReason;
       batch.update(doc(db, 'games', game.id), {
         status: 'draw',
         winner: 'draw',
@@ -1725,7 +2145,7 @@ export async function respondDrawInFirestore(
         authorUid: uid,
         text: game.isBotGame
           ? getLocalizedBotDrawReply(true, lang)
-          : 'Patta accettata.',
+          : t.drawAcceptedMsg,
         kind: game.isBotGame ? 'bot' : 'system',
         createdAt: serverTimestamp(),
       });
@@ -1740,7 +2160,7 @@ export async function respondDrawInFirestore(
         authorUid: uid,
         text: game.isBotGame
           ? getLocalizedBotDrawReply(false, lang)
-          : `${responderName} ha rifiutato la patta.`,
+          : t.drawDeclinedMsg(responderName).slice(0, 400),
         kind: game.isBotGame ? 'bot' : 'system',
         createdAt: serverTimestamp(),
       });
@@ -1778,14 +2198,15 @@ export async function requestOrAcceptRematchInFirestore(
     const myLatestUsername = userData ? String(userData.username || '').trim() : '';
     const myLatestCountry = userData ? sanitizeCountryCode(userData.country) : undefined;
 
+    const t = getFsText(lang);
     const rawNextWhiteName =
       (!nextWhiteIsBot && nextWhiteUid === uid && myLatestUsername) ||
       latestGame.blackUsername ||
-      'Bianco';
+      t.whiteFallback;
     const rawNextBlackName =
       (!nextBlackIsBot && nextBlackUid === uid && myLatestUsername) ||
       latestGame.whiteUsername ||
-      'Nero';
+      t.blackFallback;
 
     const nextWhiteUsername = rawNextWhiteName.trim().slice(0, 32).padEnd(2, '_');
     const nextBlackUsername = rawNextBlackName.trim().slice(0, 32).padEnd(2, '_');
@@ -1862,8 +2283,8 @@ export async function requestOrAcceptRematchInFirestore(
       latestGame.isBotGame && resolvedBotId ? BOT_DEFINITIONS[resolvedBotId] : undefined;
     const humanName = nextWhiteIsBot ? nextBlackUsername : nextWhiteUsername;
     const greetingText = botDef
-      ? getBotGreeting(botDef.id, humanName, lang).trim().slice(0, 400) || 'Buona partita!'
-      : 'Rivincita iniziata!';
+      ? getBotGreeting(botDef.id, humanName, lang).trim().slice(0, 400) || t.goodGameFallback
+      : t.rematchStartedMsg;
 
     const msgPayload = {
       id: newMsgId,
@@ -2154,12 +2575,12 @@ export async function saveGameReviewToFirestore(
 
   const payload: SavedGameReview = {
     id: reviewId,
-    whiteUsername: (review.whiteUsername || 'Bianco').trim().slice(0, 32) || 'Bianco',
-    blackUsername: (review.blackUsername || 'Nero').trim().slice(0, 32) || 'Nero',
+    whiteUsername: (review.whiteUsername || 'White').trim().slice(0, 32) || 'White',
+    blackUsername: (review.blackUsername || 'Black').trim().slice(0, 32) || 'Black',
     playerColor: review.playerColor === 'b' ? 'b' : 'w',
     result: review.result === 'win' || review.result === 'loss' ? review.result : 'draw',
     accuracyPct: clampPct(review.accuracyPct),
-    openingName: (review.openingName || 'Apertura Libera').trim().slice(0, 80) || 'Apertura Libera',
+    openingName: (review.openingName || 'Free Opening').trim().slice(0, 80) || 'Free Opening',
     openingAcc: clampPct(review.openingAcc),
     middlegameAcc: clampPct(review.middlegameAcc),
     endgameAcc: clampPct(review.endgameAcc),
@@ -2197,12 +2618,12 @@ export function subscribeMyGameReviews(
         const data = d.data();
         return {
           id: String(data.id || d.id),
-          whiteUsername: String(data.whiteUsername || 'Bianco'),
-          blackUsername: String(data.blackUsername || 'Nero'),
+          whiteUsername: String(data.whiteUsername || 'White'),
+          blackUsername: String(data.blackUsername || 'Black'),
           playerColor: data.playerColor === 'b' ? 'b' : 'w',
           result: data.result === 'win' || data.result === 'loss' ? data.result : 'draw',
           accuracyPct: typeof data.accuracyPct === 'number' ? data.accuracyPct : 0,
-          openingName: String(data.openingName || 'Apertura Libera'),
+          openingName: String(data.openingName || 'Free Opening'),
           openingAcc: typeof data.openingAcc === 'number' ? data.openingAcc : 0,
           middlegameAcc: typeof data.middlegameAcc === 'number' ? data.middlegameAcc : 0,
           endgameAcc: typeof data.endgameAcc === 'number' ? data.endgameAcc : 0,

@@ -51,7 +51,7 @@ export function UsernameGateModal({
         <div className="relative w-32 h-32 sm:w-52 sm:h-52 rounded-xl overflow-hidden border border-[#3C3A36] bg-[#0F1419] shadow-lg mb-4 sm:mb-5">
           <Image
             src={BIOCHESS_LOGO}
-            alt="Logo ufficiale BioChess"
+            alt="BioChess"
             fill
             priority
             sizes="(max-width: 640px) 128px, 208px"
@@ -121,7 +121,7 @@ export function UsernameGateModal({
                     setUsername(e.target.value);
                     if (error) onClearError();
                   }}
-                  placeholder="es. marco94"
+                  placeholder={dict.usernamePlaceholder}
                   maxLength={20}
                   className="w-full bg-[#302E2B] border border-[#45433E] rounded px-3.5 py-2.5 text-sm text-white placeholder:text-[#7E7D7A] focus:outline-none focus:border-[#81B64C]"
                 />

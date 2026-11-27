@@ -5,8 +5,8 @@ import { Check, ChevronDown, Highlighter, Volume2 } from 'lucide-react';
 import {
   CHESS_BOARD_THEMES,
   CHESS_PIECE_SETS,
-  SOUND_PROFILE_LABELS,
 } from '@/lib/board-themes';
+import { getLocalizedSoundProfileLabel, getUiDict } from '@/lib/i18n';
 import { soundFX } from '@/lib/sound';
 import { useBoardStyle } from './BoardThemeContext';
 import { ChessPiece } from './ChessPiece';
@@ -36,7 +36,7 @@ const PREVIEW_PIECES: Array<{
   { row: 3, col: 3, type: 'k', color: 'w' },
 ];
 
-export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePickerProps) {
+export function BoardStylePicker({ label, lang = 'en' }: BoardStylePickerProps) {
   const {
     boardThemeId,
     pieceSetId,
@@ -49,10 +49,9 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const isEn = lang.toLowerCase() === 'en';
-  const activeSoundName = isEn
-    ? SOUND_PROFILE_LABELS[soundProfileId].en
-    : SOUND_PROFILE_LABELS[soundProfileId].it;
+  const dict = getUiDict(lang);
+  const triggerLabel = label || dict.navStyle;
+  const activeSoundName = getLocalizedSoundProfileLabel(soundProfileId, lang);
 
   useEffect(() => {
     if (!open) return;
@@ -85,7 +84,7 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
         }`}
       >
         <Highlighter className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-[#81B64C] shrink-0" />
-        <span>{label}</span>
+        <span>{triggerLabel}</span>
         <span
           className="hidden sm:grid grid-cols-2 w-3.5 h-3.5 rounded-[2px] overflow-hidden border border-black/40 shrink-0"
           aria-hidden="true"
@@ -143,28 +142,28 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
 
             <div className="min-w-0 flex-1 space-y-0.5 sm:space-y-1">
               <p className="text-[11px] sm:text-xs font-extrabold text-white truncate">
-                {isEn ? 'Board & Pieces Style' : 'Stile Scacchiera & Pezzi'}
+                {dict.styleHeader}
               </p>
               <p className="text-[10px] sm:text-[11px] text-[#BABABA] truncate">
-                {isEn ? 'Pieces:' : 'Pezzi:'}{' '}
+                {dict.piecesLabel}{' '}
                 <span className="font-bold text-white">{pieceSet.name}</span>
               </p>
               <p className="text-[10px] sm:text-[11px] text-[#BABABA] truncate">
-                {isEn ? 'Board:' : 'Scacchiera:'}{' '}
+                {dict.boardLabel}{' '}
                 <span className="font-bold text-white">{boardTheme.name}</span>
               </p>
               <div className="flex items-center justify-between gap-2 pt-0.5">
                 <p className="text-[10px] sm:text-[11px] text-[#81B64C] font-semibold truncate">
-                  {isEn ? 'Sound:' : 'Suono:'} {activeSoundName}
+                  {dict.soundLabel} {activeSoundName}
                 </p>
                 <button
                   type="button"
                   onClick={() => soundFX.playCapture()}
-                  title={isEn ? 'Test sound' : 'Prova suono'}
+                  title={dict.testSoundTitle}
                   className="px-2 py-0.5 sm:py-1 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[10px] font-bold text-[#E5E4E2] inline-flex items-center gap-1 shrink-0"
                 >
                   <Volume2 className="w-3 h-3 text-[#81B64C]" />
-                  <span>{isEn ? 'Test' : 'Prova'}</span>
+                  <span>{dict.testSoundBtn}</span>
                 </button>
               </div>
             </div>
@@ -174,15 +173,13 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
             {/* Section 1: Piece Sets */}
             <div className="space-y-1.5 sm:space-y-2">
               <h3 className="text-[10px] sm:text-[11px] font-extrabold tracking-wide text-[#BABABA]">
-                {isEn ? 'Piece Set (Pawns, Knights, Kings...)' : 'Stile Pezzi (Pedoni, Cavalli, Re...)'}
+                {dict.pieceSetSection}
               </h3>
 
               <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
                 {CHESS_PIECE_SETS.map((set) => {
                   const active = set.id === pieceSetId;
-                  const soundLabel = isEn
-                    ? SOUND_PROFILE_LABELS[set.soundProfile].en
-                    : SOUND_PROFILE_LABELS[set.soundProfile].it;
+                  const soundLabel = getLocalizedSoundProfileLabel(set.soundProfile, lang);
                   return (
                     <button
                       key={set.id}
@@ -247,7 +244,7 @@ export function BoardStylePicker({ label = 'Stile', lang = 'it' }: BoardStylePic
             {/* Section 2: Board Themes */}
             <div className="space-y-1.5 sm:space-y-2">
               <h3 className="text-[10px] sm:text-[11px] font-extrabold tracking-wide text-[#BABABA]">
-                {isEn ? 'Board Theme' : 'Tema Scacchiera'}
+                {dict.boardThemeSection}
               </h3>
 
               <div className="grid grid-cols-4 gap-1.5 sm:gap-2">

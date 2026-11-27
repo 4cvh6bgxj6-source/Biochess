@@ -14,7 +14,6 @@ import {
 } from 'lucide-react';
 import {
   BOT_DEFINITIONS,
-  TIME_CONTROLS,
   type BotId,
   type Challenge,
   type ColorPref,
@@ -23,7 +22,12 @@ import {
   type TimeControlId,
 } from '@/lib/types';
 import { countryCodeToFlag } from '@/lib/world-languages';
-import type { UiDictionary } from '@/lib/i18n';
+import {
+  getLocalizedBotInfo,
+  getLocalizedTimeControl,
+  translateEndReason,
+  type UiDictionary,
+} from '@/lib/i18n';
 import { ChessBoard } from './ChessBoard';
 import { ChessPiece } from './ChessPiece';
 import { MoveQualityBadge } from './MoveQualityBadge';
@@ -33,6 +37,7 @@ export type LobbyTab = 'challenge' | 'bots' | 'leaderboard';
 interface LobbyViewProps {
   myProfile: PlayerSummary;
   dict: UiDictionary;
+  lang?: string;
   activeTab: LobbyTab;
   onTabChange: (tab: LobbyTab) => void;
   onlinePlayers: PlayerSummary[];
@@ -56,6 +61,7 @@ const TRAINING_BOTS: BotId[] = ['dummy', 'alien', 'gothamchess', 'mittens'];
 export function LobbyView({
   myProfile,
   dict,
+  lang,
   activeTab,
   onTabChange,
   onlinePlayers,
@@ -148,7 +154,7 @@ export function LobbyView({
                   )}
                   <span className="font-bold text-white">{ch.from}</span>
                   <span className="text-[#BABABA]">
-                    ({ch.fromElo}) · {TIME_CONTROLS[ch.timeControl].label}
+                    ({ch.fromElo}) · {getLocalizedTimeControl(ch.timeControl, lang).label}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -205,7 +211,7 @@ export function LobbyView({
                 </div>
               </div>
               <div className="px-3 py-1 rounded bg-[#262421] font-mono-tabular text-sm font-bold text-[#9E9D9A] shrink-0">
-                {TIME_CONTROLS[timeControl].shortLabel}
+                {getLocalizedTimeControl(timeControl, lang).shortLabel}
               </div>
             </div>
 
@@ -236,7 +242,7 @@ export function LobbyView({
                 </div>
               </div>
               <div className="px-3 py-1 rounded bg-[#262421] font-mono-tabular text-sm font-bold text-[#9E9D9A] shrink-0">
-                {myProfile.wins}V · {myProfile.draws}P · {myProfile.losses}S
+                {myProfile.wins}{dict.winShort} · {myProfile.draws}{dict.drawShort} · {myProfile.losses}{dict.lossShort}
               </div>
             </div>
           </div>
@@ -300,7 +306,7 @@ export function LobbyView({
                       type="text"
                       value={targetUsername}
                       onChange={(e) => setTargetUsername(e.target.value)}
-                      placeholder="es. marco94"
+                      placeholder={dict.usernamePlaceholder}
                       maxLength={20}
                       className="w-full bg-[#302E2B] border border-[#45433E] rounded px-3 py-2.5 text-sm text-white placeholder:text-[#7E7D7A] focus:outline-none focus:border-[#81B64C]"
                     />
@@ -323,7 +329,7 @@ export function LobbyView({
                               : 'bg-[#302E2B] border-[#3C3A36] text-[#BABABA] hover:text-white'
                           }`}
                         >
-                          {TIME_CONTROLS[tcId].shortLabel}
+                          {getLocalizedTimeControl(tcId, lang).shortLabel}
                         </button>
                       ))}
                     </div>
@@ -383,7 +389,7 @@ export function LobbyView({
                               </span>
                             )}
                             <strong className="text-white">{ch.to}</strong>
-                            <span>· {ch.targetOnline ? '...' : 'Queue'}</span>
+                            <span>· {ch.targetOnline ? '...' : dict.queueStatus}</span>
                           </span>
                           <button
                             type="button"
@@ -497,7 +503,10 @@ export function LobbyView({
                               </span>
                             </div>
                             <p className="text-[11px] text-[#9E9D9A] mt-0.5 line-clamp-1">
-                              {bot.tierLabel} · {bot.styleDescription}
+                              {(() => {
+                                const info = getLocalizedBotInfo(bot.id, lang);
+                                return `${info.tierLabel} · ${info.styleDescription}`;
+                              })()}
                             </p>
                           </div>
                         </button>
@@ -540,7 +549,10 @@ export function LobbyView({
                               </span>
                             </div>
                             <p className="text-[11px] text-[#9E9D9A] mt-0.5 line-clamp-1">
-                              {bot.tierLabel} · {bot.styleDescription}
+                              {(() => {
+                                const info = getLocalizedBotInfo(bot.id, lang);
+                                return `${info.tierLabel} · ${info.styleDescription}`;
+                              })()}
                             </p>
                           </div>
                         </button>
@@ -565,7 +577,7 @@ export function LobbyView({
                             : 'bg-[#302E2B] border-[#3C3A36] text-[#BABABA] hover:text-white'
                         }`}
                       >
-                        {TIME_CONTROLS[tcId].shortLabel}
+                        {getLocalizedTimeControl(tcId, lang).shortLabel}
                       </button>
                     ))}
                   </div>
@@ -656,7 +668,9 @@ export function LobbyView({
                             <p className="text-white truncate">
                               {m.white} <span className="text-[#8B8987]">vs</span> {m.black}
                             </p>
-                            <p className="text-[11px] text-[#9E9D9A] truncate">{m.endReason}</p>
+                            <p className="text-[11px] text-[#9E9D9A] truncate">
+                              {translateEndReason(m.endReason, lang)}
+                            </p>
                           </div>
                           <span className="font-mono-tabular font-bold text-[#DAD9D7] shrink-0">
                             {m.winner === 'w' ? '1-0' : m.winner === 'b' ? '0-1' : '½-½'}
@@ -675,28 +689,28 @@ export function LobbyView({
                 <p className="text-[11px] text-[#9E9D9A]">{dict.reviewOnlyCoachDesc}</p>
                 <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#9E9D9A]">
                   <span className="inline-flex items-center gap-1">
-                    <MoveQualityBadge quality="brilliant" size="sm" />
-                    <span>Brilliant</span>
+                    <MoveQualityBadge quality="brilliant" size="sm" lang={lang} />
+                    <span>{dict.mqBrilliant}</span>
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <MoveQualityBadge quality="great" size="sm" />
-                    <span>Great</span>
+                    <MoveQualityBadge quality="great" size="sm" lang={lang} />
+                    <span>{dict.mqGreat}</span>
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <MoveQualityBadge quality="good" size="sm" />
-                    <span>Buona</span>
+                    <MoveQualityBadge quality="good" size="sm" lang={lang} />
+                    <span>{dict.mqGood}</span>
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <MoveQualityBadge quality="neutral" size="sm" />
-                    <span>Imprecisione</span>
+                    <MoveQualityBadge quality="neutral" size="sm" lang={lang} />
+                    <span>{dict.mqInaccuracy}</span>
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <MoveQualityBadge quality="mistake" size="sm" />
-                    <span>Mistake</span>
+                    <MoveQualityBadge quality="mistake" size="sm" lang={lang} />
+                    <span>{dict.mqMistake}</span>
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <MoveQualityBadge quality="blunder" size="sm" />
-                    <span>Blunder</span>
+                    <MoveQualityBadge quality="blunder" size="sm" lang={lang} />
+                    <span>{dict.mqBlunder}</span>
                   </span>
                 </div>
               </div>

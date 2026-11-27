@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { Send } from 'lucide-react';
+import { getUiDict, type UiDictionary } from '@/lib/i18n';
 import type { ChatMessage } from '@/lib/types';
 
 interface MatchChatProps {
@@ -9,20 +10,21 @@ interface MatchChatProps {
   myUsername: string;
   opponentUsername: string;
   isBotGame: boolean;
+  dict?: UiDictionary;
   onSend: (text: string) => void;
 }
-
-const QUICK_PHRASES = ['Buona partita!', 'Bella mossa!', 'Gg', 'Ops!'];
 
 export function MatchChat({
   messages,
   myUsername,
   opponentUsername,
   isBotGame,
+  dict,
   onSend,
 }: MatchChatProps) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const d = dict || getUiDict('en');
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -45,7 +47,7 @@ export function MatchChat({
           Chat · {opponentUsername}
         </span>
         <span className="text-[11px] text-[#8B8987] shrink-0">
-          {isBotGame ? 'Bot' : 'Dal vivo'}
+          {isBotGame ? 'Bot' : d.chatLive}
         </span>
       </div>
 
@@ -54,9 +56,7 @@ export function MatchChat({
         className="flex-1 overflow-y-auto px-3.5 py-2.5 space-y-1.5 text-xs max-h-[210px]"
       >
         {messages.length === 0 && (
-          <p className="text-[#8B8987] py-4 text-center">
-            Nessun messaggio. Scrivi per iniziare.
-          </p>
+          <p className="text-[#8B8987] py-4 text-center">{d.chatEmpty}</p>
         )}
 
         {messages.map((msg) => {
@@ -86,7 +86,7 @@ export function MatchChat({
       </div>
 
       <div className="px-3 py-1.5 border-t border-[#32302C] flex items-center gap-1.5 overflow-x-auto">
-        {QUICK_PHRASES.map((phrase) => (
+        {d.chatQuickPhrases.map((phrase) => (
           <button
             key={phrase}
             type="button"
@@ -107,13 +107,13 @@ export function MatchChat({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           maxLength={400}
-          placeholder="Invia un messaggio..."
+          placeholder={d.chatPlaceholder}
           className="flex-1 min-w-0 bg-[#302E2B] border border-[#3C3A36] rounded px-3 py-1.5 text-xs text-white placeholder:text-[#8B8987] focus:outline-none focus:border-[#81B64C]"
         />
         <button
           type="submit"
           disabled={!draft.trim()}
-          aria-label="Invia messaggio"
+          aria-label={d.chatSendAria}
           className="px-3 py-1.5 rounded bg-[#3C3A36] hover:bg-[#81B64C] disabled:opacity-40 text-white text-xs font-semibold inline-flex items-center gap-1 shrink-0 transition-colors"
         >
           <Send className="w-3.5 h-3.5" />

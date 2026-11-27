@@ -23,7 +23,7 @@ export function LanguagePicker({
   country,
   onChange,
   label,
-  searchPlaceholder = 'Cerca lingua o paese...',
+  searchPlaceholder = 'Search language or country...',
   variant = 'full',
 }: LanguagePickerProps) {
   const [open, setOpen] = useState(false);

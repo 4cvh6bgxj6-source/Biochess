@@ -54,7 +54,7 @@ export function PlayerBar({
     : countryCodeToFlag(player.country) || '';
 
   const colorLabel =
-    color === 'w' ? (dict?.colorWhite ?? 'Bianco') : (dict?.colorBlack ?? 'Nero');
+    color === 'w' ? (dict?.colorWhite ?? 'White') : (dict?.colorBlack ?? 'Black');
 
   return (
     <div className="flex items-center justify-between gap-3 py-1.5">
@@ -82,12 +82,12 @@ export function PlayerBar({
             </span>
             {isSelf && (
               <span className="text-[11px] text-[#9E9D9A] shrink-0">
-                · {dict?.youTag ?? 'Tu'}
+                · {dict?.youTag ?? 'You'}
               </span>
             )}
             {activeTurn && (
               <span className="text-[11px] font-semibold text-[#81B64C] shrink-0">
-                · {isSelf ? (dict?.yourTurn ?? 'Tocca a te') : (dict?.turnTag ?? 'Turno')}
+                · {isSelf ? (dict?.yourTurn ?? 'Your turn') : (dict?.turnTag ?? 'Turn')}
               </span>
             )}
           </div>

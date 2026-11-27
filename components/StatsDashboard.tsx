@@ -13,10 +13,14 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import type { PlayerSummary, SavedGameReview } from '@/lib/types';
+import { getUiDict, type UiDictionary } from '@/lib/i18n';
+import { translateOpeningName } from '@/lib/game-analyzer';
 
 export interface StatsDashboardProps {
   profile: PlayerSummary;
   reviews: SavedGameReview[];
+  dict?: UiDictionary;
+  lang?: string;
   onOpenReviewInCoach: (review: SavedGameReview) => void;
   onOpenImportPgn: () => void;
   onBackToLobby: () => void;
@@ -34,10 +38,14 @@ interface OpeningAggregate {
 export function StatsDashboard({
   profile,
   reviews,
+  dict,
+  lang,
   onOpenReviewInCoach,
   onOpenImportPgn,
   onBackToLobby,
 }: StatsDashboardProps) {
+  const d = useMemo(() => dict || getUiDict(lang), [dict, lang]);
+
   const stats = useMemo(() => {
     const count = reviews.length;
     if (count === 0) {
@@ -101,7 +109,7 @@ export function StatsDashboard({
       else if (r.result === 'loss') losses++;
       else draws++;
 
-      const opKey = r.openingName || 'Apertura Libera';
+      const opKey = translateOpeningName(r.openingName || d.statsFreeOpeningName, lang);
       const cur = openingMap.get(opKey) || {
         count: 0,
         wins: 0,
@@ -135,22 +143,22 @@ export function StatsDashboard({
 
     const phases = [
       {
-        key: 'Apertura',
+        key: d.phaseOpening,
         val: avgOpening,
-        strengthText: 'Imposti bene l’inizio partita sviluppando i pezzi con ordine.',
-        weaknessText: 'Perdi precisione nelle prime mosse: ripassa i principi di sviluppo e controllo del centro.',
+        strengthText: d.statsOpenStrengthNote,
+        weaknessText: d.statsOpenWeaknessNote,
       },
       {
-        key: 'Mediogioco',
+        key: d.phaseMiddlegame,
         val: avgMiddlegame,
-        strengthText: 'Buona visione tattica e gestione dei piani nel mediogioco.',
-        weaknessText: 'Il mediogioco è la fase dove concedi più occasioni tattiche agli avversari.',
+        strengthText: d.statsMidStrengthNote,
+        weaknessText: d.statsMidWeaknessNote,
       },
       {
-        key: 'Finale',
+        key: d.phaseEndgame,
         val: avgEndgame,
-        strengthText: 'Ottima tecnica di conversione e precisione nei finali.',
-        weaknessText: 'Nei finali la precisione cala: esercitati su attività del Re e spinta dei pedoni.',
+        strengthText: d.statsEndStrengthNote,
+        weaknessText: d.statsEndWeaknessNote,
       },
     ];
     const sortedPhases = [...phases].sort((a, b) => b.val - a.val);
@@ -160,9 +168,9 @@ export function StatsDashboard({
     const avgBlundersPerGame = totalBlunders / count;
     const weaknessExtra =
       avgBlundersPerGame >= 1.5
-        ? ` Media di ${avgBlundersPerGame.toFixed(1)} blunder a partita: controlla sempre i pezzi in presa prima di muovere.`
+        ? ` ${d.statsExtraBlundersNote.replace('{avg}', avgBlundersPerGame.toFixed(1))}`
         : totalMissedWins > 0
-          ? ` Hai mancato ${totalMissedWins} occasioni vincenti chiare: cerca forzanti (scacchi e catture) quando sei in vantaggio.`
+          ? ` ${d.statsExtraMissedWinsNote.replace('{count}', String(totalMissedWins))}`
           : '';
 
     const openings: OpeningAggregate[] = Array.from(openingMap.entries())
@@ -200,7 +208,7 @@ export function StatsDashboard({
       strengthNote: strongest.strengthText,
       weaknessNote: `${weakest.weaknessText}${weaknessExtra}`,
     };
-  }, [reviews]);
+  }, [reviews, d, lang]);
 
   return (
     <div className="max-w-[1160px] mx-auto px-4 sm:px-6 py-6 space-y-6">
@@ -213,16 +221,16 @@ export function StatsDashboard({
             className="px-3 py-1.5 rounded bg-[#262421] hover:bg-[#3C3A36] border border-[#3C3A36] text-xs font-bold text-[#DAD9D7] inline-flex items-center gap-1.5"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Lobby</span>
+            <span>{d.lobby}</span>
           </button>
           <div>
             <h1 className="text-xl font-extrabold text-white flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-[#81B64C]" />
-              <span>Statistiche e Progressi di {profile.username}</span>
+              <span>{d.statsTitlePrefix} {profile.username}</span>
             </h1>
             <p className="text-xs text-[#9E9D9A]">
-              ELO attuale: {profile.elo} · Classificate: {profile.wins}V / {profile.losses}S /{' '}
-              {profile.draws}P
+              {d.statsCurrentElo}: {profile.elo} · {d.statsRated}: {profile.wins}{d.winShort} / {profile.losses}{d.lossShort} /{' '}
+              {profile.draws}{d.drawShort}
             </p>
           </div>
         </div>
@@ -233,7 +241,7 @@ export function StatsDashboard({
           className="px-4 py-2 rounded bg-[#81B64C] hover:bg-[#95C85E] text-white text-xs font-extrabold border-b-2 border-[#5D8A32] inline-flex items-center gap-1.5"
         >
           <GraduationCap className="w-4 h-4" />
-          <span>Analizza nuova partita / PGN</span>
+          <span>{d.statsAnalyzeNewBtn}</span>
         </button>
       </div>
 
@@ -241,7 +249,7 @@ export function StatsDashboard({
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-[#262421] border border-[#3C3A36] rounded-md p-4">
           <p className="text-[11px] font-bold uppercase tracking-wider text-[#9E9D9A]">
-            Precisione Media
+            {d.statsAvgAccuracy}
           </p>
           <div className="flex items-baseline gap-2 mt-1.5">
             <span className="text-2xl font-extrabold text-[#81B64C] font-mono-tabular">
@@ -258,52 +266,52 @@ export function StatsDashboard({
             )}
           </div>
           <p className="text-[11px] text-[#8B8987] mt-1">
-            Su {stats.count} {stats.count === 1 ? 'partita analizzata' : 'partite analizzate'}
+            {d.statsOnLabel} {stats.count} {stats.count === 1 ? d.statsGameAnalyzedOne : d.statsGameAnalyzedMany}
           </p>
         </div>
 
         <div className="bg-[#262421] border border-[#3C3A36] rounded-md p-4">
           <p className="text-[11px] font-bold uppercase tracking-wider text-[#9E9D9A]">
-            Vinte · Perse · Patte
+            {d.statsWldTitle}
           </p>
           <p className="text-2xl font-extrabold text-white font-mono-tabular mt-1.5">
             {stats.wins} <span className="text-sm text-[#8B8987]">/</span> {stats.losses}{' '}
             <span className="text-sm text-[#8B8987]">/</span> {stats.draws}
           </p>
           <p className="text-[11px] text-[#8B8987] mt-1">
-            Profilo globale: {profile.wins}V · {profile.losses}S · {profile.draws}P
+            {d.statsGlobalProfile}: {profile.wins}{d.winShort} · {profile.losses}{d.lossShort} · {profile.draws}{d.drawShort}
           </p>
         </div>
 
         <div className="bg-[#262421] border border-[#3C3A36] rounded-md p-4">
           <p className="text-[11px] font-bold uppercase tracking-wider text-[#9E9D9A]">
-            Errori & Imprecisioni
+            {d.statsMistakesInaccTitle}
           </p>
           <p className="text-2xl font-extrabold text-[#F5A84B] font-mono-tabular mt-1.5">
             {stats.totalMistakes}
             <span className="text-xs text-[#9E9D9A] font-normal ml-2">
-              (+{stats.totalInaccuracies} imprec.)
+              (+{stats.totalInaccuracies} {d.statsInaccShort})
             </span>
           </p>
           <p className="text-[11px] text-[#8B8987] mt-1">
             {stats.count > 0
-              ? `${(stats.totalMistakes / stats.count).toFixed(1)} errori a partita`
-              : 'Nessun dato ancora'}
+              ? `${(stats.totalMistakes / stats.count).toFixed(1)} ${d.statsMistakesPerGame}`
+              : d.statsNoDataYet}
           </p>
         </div>
 
         <div className="bg-[#262421] border border-[#3C3A36] rounded-md p-4">
           <p className="text-[11px] font-bold uppercase tracking-wider text-[#9E9D9A]">
-            Blunder & Occasioni
+            {d.statsBlundersChancesTitle}
           </p>
           <p className="text-2xl font-extrabold text-[#F16562] font-mono-tabular mt-1.5">
             {stats.totalBlunders}
             <span className="text-xs text-[#F59E0B] font-normal ml-2">
-              · {stats.totalMissedWins} mancate
+              · {stats.totalMissedWins} {d.statsMissedShort}
             </span>
           </p>
           <p className="text-[11px] text-[#8B8987] mt-1">
-            Brillanti: {stats.totalBrilliants} · Ottime: {stats.totalGreat}
+            {d.statsBrilliantPlural}: {stats.totalBrilliants} · {d.statsGreatPlural}: {stats.totalGreat}
           </p>
         </div>
       </div>
@@ -312,17 +320,17 @@ export function StatsDashboard({
         <div className="bg-[#262421] border border-[#3C3A36] rounded-md p-8 text-center space-y-3">
           <Sparkles className="w-8 h-8 text-[#81B64C] mx-auto" />
           <h2 className="text-base font-extrabold text-white">
-            Inizia ad analizzare le tue partite per costruire il tuo profilo tecnico
+            {d.statsEmptyTitle}
           </h2>
           <p className="text-xs text-[#9E9D9A] max-w-md mx-auto">
-            Dopo ogni partita su BioChess (o importando un file PGN), il Coach salva automaticamente precisione, errori, aperture e andamento delle fasi nel tuo profilo.
+            {d.statsEmptyDesc}
           </p>
           <button
             type="button"
             onClick={onOpenImportPgn}
             className="px-4 py-2 rounded bg-[#81B64C] hover:bg-[#95C85E] text-white text-xs font-extrabold"
           >
-            Importa un PGN ora
+            {d.statsEmptyBtn}
           </button>
         </div>
       ) : (
@@ -334,14 +342,14 @@ export function StatsDashboard({
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <h2 className="text-sm font-extrabold text-white">
-                    Progressi di Precisione nel Tempo
+                    {d.statsProgressTitle}
                   </h2>
                   <p className="text-xs text-[#9E9D9A]">
-                    Clicca su una barra per riaprire la partita nel Coach
+                    {d.statsProgressDesc}
                   </p>
                 </div>
                 <span className="text-xs font-mono-tabular text-[#81B64C] font-bold">
-                  Ultime {stats.chronological.length}
+                  {d.statsLastPrefix} {stats.chronological.length}
                 </span>
               </div>
 
@@ -358,7 +366,7 @@ export function StatsDashboard({
                       key={rev.id}
                       type="button"
                       onClick={() => onOpenReviewInCoach(rev)}
-                      title={`${rev.whiteUsername} vs ${rev.blackUsername} — ${rev.accuracyPct}% (${rev.openingName})`}
+                      title={`${rev.whiteUsername} vs ${rev.blackUsername} — ${rev.accuracyPct}% (${translateOpeningName(rev.openingName, lang)})`}
                       className="flex-1 h-full flex flex-col justify-end items-center group"
                     >
                       <span className="text-[10px] font-mono-tabular text-[#BABABA] group-hover:text-white mb-1">
@@ -378,13 +386,13 @@ export function StatsDashboard({
 
               <div className="flex items-center gap-4 text-[11px] text-[#9E9D9A]">
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-sm bg-[#81B64C]" /> Vittoria
+                  <span className="w-2.5 h-2.5 rounded-sm bg-[#81B64C]" /> {d.statsWinWord}
                 </span>
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-sm bg-[#5C8BB0]" /> Patta
+                  <span className="w-2.5 h-2.5 rounded-sm bg-[#5C8BB0]" /> {d.statsDrawWord}
                 </span>
                 <span className="inline-flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-sm bg-[#CA3431]" /> Sconfitta
+                  <span className="w-2.5 h-2.5 rounded-sm bg-[#CA3431]" /> {d.statsLossWord}
                 </span>
               </div>
             </div>
@@ -393,15 +401,15 @@ export function StatsDashboard({
             <div className="lg:col-span-5 bg-[#262421] border border-[#3C3A36] rounded-md p-5 space-y-4">
               <h2 className="text-sm font-extrabold text-white flex items-center gap-2">
                 <Target className="w-4 h-4 text-[#81B64C]" />
-                <span>Punti di Forza e Debolezza</span>
+                <span>{d.statsStrengthWeaknessTitle}</span>
               </h2>
 
               <div className="space-y-3">
                 {(
                   [
-                    ['Apertura', stats.avgOpening],
-                    ['Mediogioco', stats.avgMiddlegame],
-                    ['Finale', stats.avgEndgame],
+                    [d.phaseOpening, stats.avgOpening],
+                    [d.phaseMiddlegame, stats.avgMiddlegame],
+                    [d.phaseEndgame, stats.avgEndgame],
                   ] as const
                 ).map(([phase, pct]) => (
                   <div key={phase} className="space-y-1">
@@ -423,7 +431,7 @@ export function StatsDashboard({
                 <div className="bg-[#21201D] border border-[#81B64C]/40 rounded p-3">
                   <p className="text-xs font-extrabold text-[#9ED16A] flex items-center gap-1.5">
                     <Award className="w-3.5 h-3.5" />
-                    <span>Punto di forza: {stats.strengthLabel}</span>
+                    <span>{d.statsStrengthPrefix}: {stats.strengthLabel}</span>
                   </p>
                   <p className="text-[11px] text-[#C3C2C0] mt-1">{stats.strengthNote}</p>
                 </div>
@@ -431,7 +439,7 @@ export function StatsDashboard({
                 <div className="bg-[#21201D] border border-[#E6912C]/40 rounded p-3">
                   <p className="text-xs font-extrabold text-[#F5A84B] flex items-center gap-1.5">
                     <ShieldAlert className="w-3.5 h-3.5" />
-                    <span>Area da migliorare: {stats.weaknessLabel}</span>
+                    <span>{d.statsWeaknessPrefix}: {stats.weaknessLabel}</span>
                   </p>
                   <p className="text-[11px] text-[#C3C2C0] mt-1">{stats.weaknessNote}</p>
                 </div>
@@ -446,10 +454,10 @@ export function StatsDashboard({
               <div className="px-4 py-3 bg-[#21201D] border-b border-[#3C3A36] flex items-center justify-between">
                 <h2 className="text-xs font-extrabold uppercase tracking-wider text-[#BABABA] flex items-center gap-1.5">
                   <BookOpen className="w-3.5 h-3.5 text-[#D2B088]" />
-                  <span>Aperture Utilizzate</span>
+                  <span>{d.statsOpeningsUsedTitle}</span>
                 </h2>
                 <span className="text-xs font-mono-tabular text-[#9E9D9A]">
-                  {stats.openings.length} varianti
+                  {stats.openings.length} {d.statsVariantsWord}
                 </span>
               </div>
 
@@ -462,8 +470,8 @@ export function StatsDashboard({
                     <div className="min-w-0">
                       <p className="font-bold text-white truncate">{op.openingName}</p>
                       <p className="text-[11px] text-[#9E9D9A] font-mono-tabular">
-                        {op.count} {op.count === 1 ? 'partita' : 'partite'} · {op.wins}V {op.draws}P{' '}
-                        {op.losses}S
+                        {op.count} {op.count === 1 ? d.statsGameWordOne : d.statsGameWordMany} · {op.wins}{d.winShort} {op.draws}{d.drawShort}{' '}
+                        {op.losses}{d.lossShort}
                       </p>
                     </div>
                     <span className="font-mono-tabular font-extrabold text-[#81B64C] shrink-0">
@@ -479,7 +487,7 @@ export function StatsDashboard({
               <div className="px-4 py-3 bg-[#21201D] border-b border-[#3C3A36] flex items-center justify-between">
                 <h2 className="text-xs font-extrabold uppercase tracking-wider text-[#BABABA] flex items-center gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5 text-[#F5A84B]" />
-                  <span>Storico Partite Analizzate</span>
+                  <span>{d.statsHistoryTitle}</span>
                 </h2>
                 <span className="text-xs font-mono-tabular text-[#9E9D9A]">{reviews.length}</span>
               </div>
@@ -497,13 +505,13 @@ export function StatsDashboard({
                         {rev.whiteUsername} vs {rev.blackUsername}
                       </p>
                       <p className="text-[11px] text-[#9E9D9A] truncate mt-0.5">
-                        {rev.openingName} · Errori: {rev.mistakeCount} · Blunder: {rev.blunderCount}
+                        {translateOpeningName(rev.openingName, lang)} · {d.statsMistakesLabel}: {rev.mistakeCount} · {d.statsBlundersLabel}: {rev.blunderCount}
                       </p>
                     </div>
                     <div className="text-right shrink-0 font-mono-tabular">
                       <p className="text-xs font-extrabold text-[#81B64C]">{rev.accuracyPct}%</p>
                       <p className="text-[10px] text-[#9E9D9A]">
-                        {rev.result === 'win' ? 'Vinta' : rev.result === 'loss' ? 'Persa' : 'Patta'}
+                        {rev.result === 'win' ? d.statsWonLabel : rev.result === 'loss' ? d.statsLostLabel : d.statsDrawnLabel}
                       </p>
                     </div>
                   </button>

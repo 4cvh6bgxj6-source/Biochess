@@ -305,7 +305,33 @@ export function ChessApp() {
 
   useEffect(() => {
     activeLangRef.current = activeLang;
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem('biochess_lang', activeLang);
+      } catch {
+        // ignore storage restrictions
+      }
+      document.documentElement.lang = activeLang;
+    }
   }, [activeLang]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const savedLang = window.localStorage.getItem('biochess_lang');
+      const savedCountry = window.localStorage.getItem('biochess_country');
+      if (savedLang) {
+        queueMicrotask(() => {
+          setSelectedLocale((prev) => ({
+            lang: savedLang,
+            country: savedCountry || prev.country,
+          }));
+        });
+      }
+    } catch {
+      // ignore storage restrictions
+    }
+  }, []);
 
   // Parse invite link ?sfida=username
   useEffect(() => {
@@ -319,16 +345,15 @@ export function ChessApp() {
   // Firebase Auth listener + handle redirect fallback result
   useEffect(() => {
     void getRedirectResult(auth).catch((err: unknown) => {
+      const curDict = getUiDict(activeLangRef.current);
       const code =
         typeof err === 'object' && err !== null && 'code' in err
           ? String((err as { code?: unknown }).code || '')
           : '';
       if (code === 'auth/unauthorized-domain') {
-        setAuthError(
-          `Dominio "${window.location.hostname}" non autorizzato in Firebase. Aggiungilo in Firebase Console → Authentication → Settings → Authorized domains.`
-        );
+        setAuthError(curDict.errUnauthorizedDomain.replace('{host}', window.location.hostname));
       } else if (code && code !== 'auth/popup-closed-by-user') {
-        setAuthError(`Accesso con Google non riuscito (${code}). Riprova.`);
+        setAuthError(curDict.errGoogleLoginFailed.replace('{code}', ` (${code})`));
       }
     });
 
@@ -848,7 +873,7 @@ export function ChessApp() {
             clockBaseWhiteMs,
             clockBaseBlackMs,
           });
-          void claimTimeoutInFirestore(currentGame, timedOut, authUid)
+          void claimTimeoutInFirestore(currentGame, timedOut, authUid, activeLangRef.current)
             .then((outcome) => {
               console.info('[BioChess][Timer] Timeout claim outcome', { claimKey, outcome });
               if (outcome === 'claimed') {
@@ -999,6 +1024,7 @@ export function ChessApp() {
       if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
         return;
       }
+      const curDict = getUiDict(activeLangRef.current);
       if (code === 'auth/popup-blocked') {
         if (typeof window !== 'undefined' && window.self === window.top) {
           try {
@@ -1008,25 +1034,21 @@ export function ChessApp() {
             // fall through to clear message
           }
         }
-        setAuthError('Il browser ha bloccato il popup di Google. Consenti i popup per questo sito e riprova.');
+        setAuthError(curDict.errPopupBlocked);
         return;
       }
       if (code === 'auth/unauthorized-domain') {
         const host = typeof window !== 'undefined' ? window.location.hostname : '';
-        setAuthError(
-          `Dominio "${host}" non autorizzato su Firebase. Aggiungilo in Firebase Console → Authentication → Settings → Authorized domains.`
-        );
+        setAuthError(curDict.errUnauthorizedDomain.replace('{host}', host));
         return;
       }
       if (code === 'auth/operation-not-allowed') {
-        setAuthError('Accesso Google non abilitato su Firebase Console (Authentication → Sign-in method).');
+        setAuthError(curDict.errGoogleAuthDisabled);
         return;
       }
       console.error('Google Sign-In error:', code, err);
       setAuthError(
-        code
-          ? `Accesso con Google non riuscito (${code}). Riprova.`
-          : 'Accesso con Google non riuscito. Riprova.'
+        curDict.errGoogleLoginFailed.replace('{code}', code ? ` (${code})` : '')
       );
     } finally {
       setConnecting(false);
@@ -1035,6 +1057,14 @@ export function ChessApp() {
 
   function handleLocaleChange(opt: WorldLocaleOption) {
     setSelectedLocale({ lang: opt.lang, country: opt.country });
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem('biochess_lang', opt.lang);
+        window.localStorage.setItem('biochess_country', opt.country);
+      } catch {
+        // ignore storage restrictions
+      }
+    }
     if (authUser && profile) {
       setProfile((prev) => (prev ? { ...prev, lang: opt.lang, country: opt.country } : prev));
       void updateUserLocale(authUser.uid, opt.lang, opt.country).catch((err: Error) =>
@@ -1172,6 +1202,7 @@ export function ChessApp() {
             liveWhiteMs,
             liveBlackMs,
             expectedMovesCount,
+            lang: activeLangRef.current,
           });
 
           pendingCommitQueueRef.current.shift();
@@ -1222,7 +1253,7 @@ export function ChessApp() {
           );
           setOptimisticMoves([...optimisticMovesRef.current]);
           console.error('Move submission warning:', err);
-          setGameError('Impossibile completare la mossa: controlla connessione o orologio.');
+          setGameError(getUiDict(activeLangRef.current).errMoveFailed);
           setTimeout(() => setGameError(null), 3500);
           break;
         }
@@ -1481,7 +1512,7 @@ export function ChessApp() {
                   type="button"
                   onClick={() => void handleLogout()}
                   title={profile.username}
-                  aria-label={`${profile.username} - Esci`}
+                  aria-label={`${profile.username} - ${dict.logoutAria}`}
                   className="px-2 sm:px-3 py-1 sm:py-1.5 rounded bg-[#302E2B] hover:bg-[#3C3A36] border border-[#3C3A36] text-[#E5E4E2] text-[11px] sm:text-xs font-bold inline-flex items-center gap-1 sm:gap-2 whitespace-nowrap shrink-0"
                 >
                   {countryCodeToFlag(profile.country) && (
@@ -1586,6 +1617,7 @@ export function ChessApp() {
                 myUid={authUser?.uid}
                 myUsername={profile.username}
                 dict={dict}
+                lang={activeLang}
                 whiteTimeMs={whiteTimeMs}
                 blackTimeMs={blackTimeMs}
                 isBoardSynced={isBoardSynced}
@@ -1610,7 +1642,8 @@ export function ChessApp() {
                     activeGame,
                     myColor,
                     profile.username,
-                    authUser.uid
+                    authUser.uid,
+                    activeLang
                   ).catch((err: Error) => setRuntimeFatalError(err));
                 }}
                 onOfferDraw={() => {
@@ -1670,7 +1703,7 @@ export function ChessApp() {
                           reason = ` (${err.message.slice(0, 90)})`;
                         }
                       }
-                      setGameError(`Impossibile avviare la rivincita al momento${reason}. Riprova.`);
+                      setGameError(dict.errRematchFailed.replace('{reason}', reason));
                       setTimeout(() => setGameError(null), 5000);
                     })
                     .finally(() => {
@@ -1737,6 +1770,8 @@ export function ChessApp() {
             <StatsDashboard
               profile={profile}
               reviews={savedReviews}
+              dict={dict}
+              lang={activeLang}
               onOpenReviewInCoach={(rev) => {
                 setCoachTargetGame(null);
                 setCoachTargetPgn({
@@ -1766,6 +1801,7 @@ export function ChessApp() {
             <LobbyView
               myProfile={profile}
               dict={dict}
+              lang={activeLang}
               activeTab={lobbyTab}
               onTabChange={setLobbyTab}
               onlinePlayers={onlinePlayers}
@@ -1783,7 +1819,8 @@ export function ChessApp() {
                   authUser.uid,
                   toUsername,
                   timeControl,
-                  colorPref
+                  colorPref,
+                  activeLang
                 )
                   .then((res) => {
                     if (!res.ok) setChallengeError(res.error);
@@ -1798,7 +1835,7 @@ export function ChessApp() {
               onRespondChallenge={(challengeId, accept) => {
                 if (!authUser) return;
                 setChallengeError(null);
-                void respondToChallenge(challengeId, accept, authUser.uid)
+                void respondToChallenge(challengeId, accept, authUser.uid, activeLang)
                   .then((res) => {
                     if (!res.ok) {
                       setChallengeError(res.error);
@@ -1838,9 +1875,10 @@ export function ChessApp() {
         <IncomingChallengeToast
           challenge={incomingChallenges[0]}
           dict={dict}
+          lang={activeLang}
           onAccept={() => {
             if (!authUser) return;
-            void respondToChallenge(incomingChallenges[0].id, true, authUser.uid)
+            void respondToChallenge(incomingChallenges[0].id, true, authUser.uid, activeLang)
               .then((res) => {
                 if (res.ok && res.gameId) {
                   openGameRoom(res.gameId);
@@ -1851,7 +1889,7 @@ export function ChessApp() {
           }}
           onDecline={() => {
             if (!authUser) return;
-            void respondToChallenge(incomingChallenges[0].id, false, authUser.uid).catch(
+            void respondToChallenge(incomingChallenges[0].id, false, authUser.uid, activeLang).catch(
               (err: Error) => setRuntimeFatalError(err)
             );
           }}
